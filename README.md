@@ -8,10 +8,8 @@ provides scoped child containers for testing and per-context overrides.
 
 ## Installation
 
-PyPI publishing is planned. For now, install directly from GitHub:
-
 ```bash
-pip install git+https://github.com/dstarman/miniject.git
+pip install miniject
 ```
 
 ## Quick start
