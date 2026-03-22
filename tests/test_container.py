@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from container import Container, ResolutionError
+from miniject import Container, ResolutionError
 
 # ── Test fixtures ────────────────────────────────────────────────────
 
@@ -205,6 +205,14 @@ def test_binding_overrides_default() -> None:
 
 
 # ── error handling ───────────────────────────────────────────────────
+
+
+def test_bind_none_instance() -> None:
+    """None is a valid instance value — it should not fall through to auto-wiring."""
+    c = Container()
+    c.bind(type(None), instance=None)
+
+    assert c.resolve(type(None)) is None
 
 
 def test_missing_binding_raises_resolution_error() -> None:

@@ -66,7 +66,7 @@ class Container:
         service: type[_T],
         *,
         factory: Callable[..., _T] | None = None,
-        instance: _T | None = None,
+        instance: _T | object = _EMPTY,
         singleton: bool = False,
     ) -> None:
         """Register a service type.
@@ -76,7 +76,7 @@ class Container:
         * ``bind(SomeType, factory=fn)`` — custom factory (transient by default)
         * ``bind(SomeType, factory=fn, singleton=True)`` — factory singleton
         """
-        if instance is not None:
+        if instance is not _EMPTY:
             self._bindings[service] = _Binding(instance=instance)
             self._singletons[service] = instance
         elif factory is not None:
