@@ -8,11 +8,7 @@ provides scoped child containers for testing and per-context overrides.
 
 ## Installation
 
-```bash
-pip install miniject
-```
-
-Or from source:
+PyPI publishing is planned. For now, install directly from GitHub:
 
 ```bash
 pip install git+https://github.com/dstarman/miniject.git
@@ -66,6 +62,10 @@ and resolves each typed parameter from the container. Parameters with default
 values are left to Python when no binding exists. Nullable dependencies such as
 `Database | None = None` are supported: if `Database` is bound it is injected,
 otherwise Python keeps the default `None`.
+
+Common scalar builtins like `int`, `str`, `float`, `bool`, and `bytes` are not
+auto-injected. Prefer typed value objects or explicit factories for scalar
+configuration values.
 
 Type hints must be importable at runtime. If `get_type_hints()` cannot resolve
 an annotation, miniject raises `ResolutionError` instead of silently skipping

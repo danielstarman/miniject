@@ -35,6 +35,17 @@ class _ServiceWithDefault:
         self.timeout = timeout
 
 
+class _TimeoutSettings:
+    def __init__(self, seconds: int) -> None:
+        self.seconds = seconds
+
+
+class _ServiceWithSettings:
+    def __init__(self, database: _Database, settings: _TimeoutSettings) -> None:
+        self.database = database
+        self.settings = settings
+
+
 class _ServiceWithOptionalDatabaseDefault:
     def __init__(self, database: _Database | None = None) -> None:
         self.database = database
@@ -301,8 +312,7 @@ def test_default_used_when_no_binding() -> None:
     assert svc.timeout == 30  # default preserved
 
 
-def test_binding_overrides_default() -> None:
-    """If a binding exists for the param type, it wins over the default."""
+def test_scalar_bindings_do_not_override_defaults() -> None:
     c = Container()
     c.bind(_Database, instance=_Database())
     c.bind(int, instance=99)
@@ -310,7 +320,20 @@ def test_binding_overrides_default() -> None:
 
     svc = c.resolve(_ServiceWithDefault)
 
-    assert svc.timeout == 99  # binding wins
+    assert svc.timeout == 30  # scalar auto-injection is intentionally unsupported
+
+
+def test_typed_value_object_binding_is_injected() -> None:
+    c = Container()
+    settings = _TimeoutSettings(99)
+    c.bind(_Database, instance=_Database())
+    c.bind(_TimeoutSettings, instance=settings)
+    c.bind(_ServiceWithSettings)
+
+    svc = c.resolve(_ServiceWithSettings)
+
+    assert svc.settings is settings
+    assert svc.settings.seconds == 99
 
 
 def test_optional_binding_overrides_none_default() -> None:

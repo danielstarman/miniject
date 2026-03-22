@@ -19,6 +19,7 @@ from typing import Any, TypeVar, cast
 _T = TypeVar("_T")
 
 _EMPTY: object = object()
+_DISALLOWED_AUTO_INJECT_TYPES: frozenset[type] = frozenset({bool, bytes, float, int, str})
 _NONE_TYPE: type[None] = type(None)
 _UNION_TYPES: tuple[object, ...] = (typing.Union, types.UnionType)
 
@@ -132,7 +133,7 @@ class Container:
         if binding.singleton:
             return cast(
                 "_T",
-                binding_owner.resolve_singleton(
+                binding_owner._resolve_singleton(
                     service,
                     binding,
                     requester=self,
@@ -149,9 +150,6 @@ class Container:
         factory = _require_factory(binding)
         instance = self._invoke_factory(factory, _stack=(*_stack, service), **overrides)
 
-        if binding.singleton:
-            binding_owner.store_singleton(service, instance)
-
         return cast("_T", instance)
 
     def _find_binding(self, service: type) -> _Binding | None:
@@ -165,14 +163,10 @@ class Container:
         if service in self._bindings:
             return self, self._bindings[service]
         if self._parent is not None:
-            return self._parent.find_binding_owner(service)
+            return self._parent._find_binding_owner(service)
         return None
 
-    def find_binding_owner(self, service: type) -> tuple[Container, _Binding] | None:
-        """Find the container that owns a service binding."""
-        return self._find_binding_owner(service)
-
-    def resolve_singleton(
+    def _resolve_singleton(
         self,
         service: type,
         binding: _Binding,
@@ -182,12 +176,12 @@ class Container:
         overrides: dict[str, Any],
     ) -> object:
         with self._lock:
-            existing = self.get_singleton(service)
+            existing = self._singletons.get(service, _EMPTY)
             if existing is not _EMPTY:
                 return existing
 
             if binding.instance is not _EMPTY:
-                self.store_singleton(service, binding.instance)
+                self._singletons[service] = binding.instance
                 return binding.instance
 
             factory = _require_factory(binding)
@@ -196,16 +190,8 @@ class Container:
                 _stack=stack,
                 **overrides,
             )
-            self.store_singleton(service, instance)
+            self._singletons[service] = instance
             return instance
-
-    def get_singleton(self, service: type) -> object:
-        """Return a cached singleton instance or the empty sentinel."""
-        return self._singletons.get(service, _EMPTY)
-
-    def store_singleton(self, service: type, instance: object) -> None:
-        """Cache a singleton instance on this container."""
-        self._singletons[service] = instance
 
     def _invoke_factory(
         self, factory: Callable[..., Any], *, _stack: tuple[type, ...], **overrides: Any,
@@ -316,13 +302,13 @@ def _resolve_param_type(
                     "Annotated[...] which miniject does not support; use an explicit "
                     "factory instead",
                 )
-            binding_key = inner if isinstance(inner, type) else None
+            binding_key = inner if _is_auto_injectable_type(inner) else None
             return _ResolvedParamType(
                 binding_key=binding_key,
                 display_name=_format_type_name(param_type),
             )
 
-    binding_key = param_type if isinstance(param_type, type) else None
+    binding_key = param_type if _is_auto_injectable_type(param_type) else None
     return _ResolvedParamType(
         binding_key=binding_key,
         display_name=_format_type_name(param_type),
@@ -336,6 +322,11 @@ def _format_type_name(param_type: Any) -> str:
     if isinstance(param_type, type):
         return param_type.__name__
     return str(param_type).replace("typing.", "")
+
+
+def _is_auto_injectable_type(param_type: Any) -> bool:
+    """Return whether a type hint should be used as a DI lookup key."""
+    return isinstance(param_type, type) and param_type not in _DISALLOWED_AUTO_INJECT_TYPES
 
 
 def _callable_name(fn: Callable[..., Any]) -> str:
