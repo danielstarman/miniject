@@ -11,9 +11,9 @@ from __future__ import annotations
 import inspect
 import types
 import typing
-from threading import RLock
 from collections.abc import Callable
 from dataclasses import dataclass
+from threading import RLock
 from typing import Any, TypeVar, cast
 
 _T = TypeVar("_T")
@@ -131,8 +131,8 @@ class Container:
         # binding is defined.
         if binding.singleton:
             return cast(
-                _T,
-                binding_owner._resolve_singleton(
+                "_T",
+                binding_owner.resolve_singleton(
                     service,
                     binding,
                     requester=self,
@@ -143,16 +143,16 @@ class Container:
 
         # Instance binding (already stored)
         if binding.instance is not _EMPTY:
-            return cast(_T, binding.instance)
+            return cast("_T", binding.instance)
 
         # Factory binding
-        assert binding.factory is not None
-        instance = self._invoke_factory(binding.factory, _stack=(*_stack, service), **overrides)
+        factory = _require_factory(binding)
+        instance = self._invoke_factory(factory, _stack=(*_stack, service), **overrides)
 
         if binding.singleton:
-            binding_owner._singletons[service] = instance
+            binding_owner.store_singleton(service, instance)
 
-        return cast(_T, instance)
+        return cast("_T", instance)
 
     def _find_binding(self, service: type) -> _Binding | None:
         binding_owner_and_binding = self._find_binding_owner(service)
@@ -165,10 +165,14 @@ class Container:
         if service in self._bindings:
             return self, self._bindings[service]
         if self._parent is not None:
-            return self._parent._find_binding_owner(service)
+            return self._parent.find_binding_owner(service)
         return None
 
-    def _resolve_singleton(
+    def find_binding_owner(self, service: type) -> tuple[Container, _Binding] | None:
+        """Find the container that owns a service binding."""
+        return self._find_binding_owner(service)
+
+    def resolve_singleton(
         self,
         service: type,
         binding: _Binding,
@@ -178,25 +182,33 @@ class Container:
         overrides: dict[str, Any],
     ) -> object:
         with self._lock:
-            existing = self._singletons.get(service, _EMPTY)
+            existing = self.get_singleton(service)
             if existing is not _EMPTY:
                 return existing
 
             if binding.instance is not _EMPTY:
-                self._singletons[service] = binding.instance
+                self.store_singleton(service, binding.instance)
                 return binding.instance
 
-            assert binding.factory is not None
+            factory = _require_factory(binding)
             instance = requester._invoke_factory(
-                binding.factory,
+                factory,
                 _stack=stack,
                 **overrides,
             )
-            self._singletons[service] = instance
+            self.store_singleton(service, instance)
             return instance
 
+    def get_singleton(self, service: type) -> object:
+        """Return a cached singleton instance or the empty sentinel."""
+        return self._singletons.get(service, _EMPTY)
+
+    def store_singleton(self, service: type, instance: object) -> None:
+        """Cache a singleton instance on this container."""
+        self._singletons[service] = instance
+
     def _invoke_factory(
-        self, factory: Callable[..., Any], *, _stack: tuple[type, ...], **overrides: Any
+        self, factory: Callable[..., Any], *, _stack: tuple[type, ...], **overrides: Any,
     ) -> Any:
         """Call a factory, resolving its parameters from the container."""
         sig_and_hints = _introspect_factory(factory)
@@ -239,7 +251,7 @@ class Container:
                 f"Cannot resolve {factory.__name__}: "
                 f"missing binding for parameter '{param_name}' "
                 f"(type={resolved_type.display_name}) "
-                f"({chain})"
+                f"({chain})",
             )
 
         return factory(**kwargs)
@@ -271,7 +283,7 @@ def _get_type_hints_or_raise(
         raise ResolutionError(
             f"Cannot resolve {factory_name}: failed to evaluate type hints for "
             f"{target_name}; make annotations importable at runtime or use an explicit "
-            f"factory ({exc.__class__.__name__}: {exc})"
+            f"factory ({exc.__class__.__name__}: {exc})",
         ) from exc
 
 
@@ -289,7 +301,7 @@ def _resolve_param_type(
     if origin is typing.Annotated:
         raise ResolutionError(
             f"Cannot resolve {factory_name}: parameter '{param_name}' uses Annotated[...] "
-            "which miniject does not support; use an explicit factory instead"
+            "which miniject does not support; use an explicit factory instead",
         )
 
     if origin in _UNION_TYPES:
@@ -302,7 +314,7 @@ def _resolve_param_type(
                 raise ResolutionError(
                     f"Cannot resolve {factory_name}: parameter '{param_name}' uses "
                     "Annotated[...] which miniject does not support; use an explicit "
-                    "factory instead"
+                    "factory instead",
                 )
             binding_key = inner if isinstance(inner, type) else None
             return _ResolvedParamType(
@@ -329,3 +341,12 @@ def _format_type_name(param_type: Any) -> str:
 def _callable_name(fn: Callable[..., Any]) -> str:
     """Best-effort human-readable callable name for diagnostics."""
     return getattr(fn, "__name__", fn.__class__.__name__)
+
+
+def _require_factory(binding: _Binding) -> Callable[..., Any]:
+    """Return a binding factory or raise if the binding is malformed."""
+    factory = binding.factory
+    if factory is None:
+        msg = "Binding is missing a factory"
+        raise ResolutionError(msg)
+    return factory

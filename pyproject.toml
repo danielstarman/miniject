@@ -41,10 +41,15 @@ src = ["src", "tests"]
 [tool.ruff.lint]
 select = ["ALL"]
 ignore = [
-    "ANN101",  # missing-type-self
+    "ANN401",  # Any is appropriate at runtime introspection boundaries
     "D",       # pydocstyle (docstrings covered manually)
-    "S101",    # assert in tests
+    "EM102",   # inline exception messages are fine for a small library
+    "TC003",   # keep runtime-visible imports for type-hint introspection
+    "TRY003",  # small project; dedicated exception-message helpers add noise
 ]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*.py" = ["ANN001", "PLR2004", "S101"]
 
 [tool.pyright]
 pythonPath = "src"

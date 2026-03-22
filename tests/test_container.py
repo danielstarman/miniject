@@ -50,6 +50,10 @@ class _AnnotatedService:
         self.database = database
 
 
+class _MissingRuntimeDependency:
+    pass
+
+
 class _MissingRuntimeHintService:
     def __init__(self, database: _MissingRuntimeDependency) -> None:
         self.database = database
@@ -376,8 +380,12 @@ def test_unresolvable_runtime_type_hints_raise_resolution_error() -> None:
     c = Container()
     c.bind(_MissingRuntimeHintService)
 
-    with pytest.raises(ResolutionError, match="failed to evaluate type hints"):
-        c.resolve(_MissingRuntimeHintService)
+    original = globals().pop("_MissingRuntimeDependency")
+    try:
+        with pytest.raises(ResolutionError, match="failed to evaluate type hints"):
+            c.resolve(_MissingRuntimeHintService)
+    finally:
+        globals()["_MissingRuntimeDependency"] = original
 
 
 def test_untyped_required_param_shows_unknown_type() -> None:
