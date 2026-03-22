@@ -64,13 +64,24 @@ values are left to Python when no binding exists. Nullable dependencies such as
 otherwise Python keeps the default `None`.
 
 Common scalar builtins like `int`, `str`, `float`, `bool`, and `bytes` are not
-auto-injected. Prefer typed value objects or explicit factories for scalar
-configuration values.
+supported as DI keys. Prefer typed value objects or explicit factories for
+scalar configuration values.
 
 Type hints must be importable at runtime. If `get_type_hints()` cannot resolve
 an annotation, miniject raises `ResolutionError` instead of silently skipping
-injection. `Annotated[...]` is intentionally unsupported; use an explicit
-factory when metadata should influence construction.
+injection. `Annotated[...]` is intentionally unsupported. miniject does not
+provide qualifier-style multiple bindings for the same base type. If two
+dependencies mean different things, model them as different types. If the
+distinction is construction logic, use an explicit factory.
+
+## Design Philosophy
+
+miniject prefers minimal container magic:
+
+- constructors should describe semantic dependencies, not container selection rules
+- composition roots and factories should own non-trivial wiring decisions
+- if two dependencies mean different things, they should usually be different types
+- if construction depends on runtime policy, use an explicit factory rather than metadata
 
 ### `container.resolve(service, **overrides)`
 

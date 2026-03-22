@@ -91,6 +91,7 @@ class Container:
         * ``bind(SomeType, factory=fn)`` — custom factory (transient by default)
         * ``bind(SomeType, factory=fn, singleton=True)`` — factory singleton
         """
+        _validate_service_type(service)
         if instance is not _EMPTY:
             self._bindings[service] = _Binding(instance=instance)
             self._singletons[service] = instance
@@ -341,3 +342,13 @@ def _require_factory(binding: _Binding) -> Callable[..., Any]:
         msg = "Binding is missing a factory"
         raise ResolutionError(msg)
     return factory
+
+
+def _validate_service_type(service: type[Any]) -> None:
+    """Reject unsupported DI keys up front."""
+    if service in _DISALLOWED_AUTO_INJECT_TYPES:
+        msg = (
+            f"Cannot bind {service.__name__}: scalar builtins are not supported as DI keys; "
+            "use a typed value object or an explicit factory instead"
+        )
+        raise TypeError(msg)

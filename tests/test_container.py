@@ -312,15 +312,11 @@ def test_default_used_when_no_binding() -> None:
     assert svc.timeout == 30  # default preserved
 
 
-def test_scalar_bindings_do_not_override_defaults() -> None:
+def test_scalar_bindings_are_rejected() -> None:
     c = Container()
-    c.bind(_Database, instance=_Database())
-    c.bind(int, instance=99)
-    c.bind(_ServiceWithDefault)
 
-    svc = c.resolve(_ServiceWithDefault)
-
-    assert svc.timeout == 30  # scalar auto-injection is intentionally unsupported
+    with pytest.raises(TypeError, match="scalar builtins"):
+        c.bind(int, instance=99)
 
 
 def test_typed_value_object_binding_is_injected() -> None:
