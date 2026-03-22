@@ -11,6 +11,7 @@ from __future__ import annotations
 import inspect
 import types
 import typing
+from threading import RLock
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, TypeVar, cast
@@ -72,6 +73,7 @@ class Container:
         self._bindings: dict[type, _Binding] = {}
         self._singletons: dict[type, object] = {}
         self._parent = _parent
+        self._lock = RLock()
 
     def bind(
         self,
@@ -125,9 +127,19 @@ class Container:
             raise ResolutionError(f"Cannot resolve {service.__name__}: no binding ({chain})")
         binding_owner, binding = binding_owner_and_binding
 
-        # Singleton factories should be shared where the binding is defined.
-        if service in binding_owner._singletons:
-            return cast(_T, binding_owner._singletons[service])
+        # Singleton factories should be shared and initialized safely where the
+        # binding is defined.
+        if binding.singleton:
+            return cast(
+                _T,
+                binding_owner._resolve_singleton(
+                    service,
+                    binding,
+                    requester=self,
+                    stack=(*_stack, service),
+                    overrides=overrides,
+                ),
+            )
 
         # Instance binding (already stored)
         if binding.instance is not _EMPTY:
@@ -155,6 +167,33 @@ class Container:
         if self._parent is not None:
             return self._parent._find_binding_owner(service)
         return None
+
+    def _resolve_singleton(
+        self,
+        service: type,
+        binding: _Binding,
+        *,
+        requester: Container,
+        stack: tuple[type, ...],
+        overrides: dict[str, Any],
+    ) -> object:
+        with self._lock:
+            existing = self._singletons.get(service, _EMPTY)
+            if existing is not _EMPTY:
+                return existing
+
+            if binding.instance is not _EMPTY:
+                self._singletons[service] = binding.instance
+                return binding.instance
+
+            assert binding.factory is not None
+            instance = requester._invoke_factory(
+                binding.factory,
+                _stack=stack,
+                **overrides,
+            )
+            self._singletons[service] = instance
+            return instance
 
     def _invoke_factory(
         self, factory: Callable[..., Any], *, _stack: tuple[type, ...], **overrides: Any

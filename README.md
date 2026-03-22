@@ -147,11 +147,13 @@ class UserService:
 ## Thread safety
 
 miniject is designed for the **composition-root-at-startup** pattern: build
-and populate the container at application start, then resolve the object graph
-once. There is no locking around singleton creation. If you resolve the same
-singleton concurrently from multiple threads during startup, you may get
-duplicate instantiation. In practice this is not an issue when the container
-is fully resolved before serving requests.
+and populate the container at application start, then share it for resolution.
+Concurrent `resolve()` calls are safe after configuration is complete, and
+singleton factories are initialized at most once per owning container.
+
+Rebinding services on a container that is already being shared across threads is
+not supported. If you need runtime reconfiguration, build a new container or a
+child scope instead of mutating a shared container in place.
 
 ## When to use miniject
 
