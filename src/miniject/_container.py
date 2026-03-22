@@ -9,17 +9,29 @@ injection.
 from __future__ import annotations
 
 import inspect
+import types
 import typing
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any, TypeVar, cast
 
 _T = TypeVar("_T")
 
 _EMPTY: object = object()
+_NONE_TYPE: type[None] = type(None)
+_UNION_TYPES: tuple[object, ...] = (typing.Union, types.UnionType)
 
 
 class ResolutionError(Exception):
     """Raised when a dependency cannot be resolved."""
+
+
+@dataclass(frozen=True, slots=True)
+class _ResolvedParamType:
+    """Normalized parameter type metadata used during dependency resolution."""
+
+    binding_key: type | None
+    display_name: str
 
 
 class _Binding:
@@ -106,15 +118,16 @@ class Container:
             chain = " -> ".join(t.__name__ for t in (*_stack, service))
             raise ResolutionError(f"Circular dependency: {chain}")
 
-        # Check local singletons first
-        if service in self._singletons:
-            return cast(_T, self._singletons[service])
-
-        # Find binding (local then parent chain)
-        binding = self._find_binding(service)
-        if binding is None:
+        # Find binding owner (local then parent chain)
+        binding_owner_and_binding = self._find_binding_owner(service)
+        if binding_owner_and_binding is None:
             chain = " -> ".join(t.__name__ for t in (*_stack, service))
             raise ResolutionError(f"Cannot resolve {service.__name__}: no binding ({chain})")
+        binding_owner, binding = binding_owner_and_binding
+
+        # Singleton factories should be shared where the binding is defined.
+        if service in binding_owner._singletons:
+            return cast(_T, binding_owner._singletons[service])
 
         # Instance binding (already stored)
         if binding.instance is not _EMPTY:
@@ -125,15 +138,22 @@ class Container:
         instance = self._invoke_factory(binding.factory, _stack=(*_stack, service), **overrides)
 
         if binding.singleton:
-            self._singletons[service] = instance
+            binding_owner._singletons[service] = instance
 
         return cast(_T, instance)
 
     def _find_binding(self, service: type) -> _Binding | None:
+        binding_owner_and_binding = self._find_binding_owner(service)
+        if binding_owner_and_binding is None:
+            return None
+        _, binding = binding_owner_and_binding
+        return binding
+
+    def _find_binding_owner(self, service: type) -> tuple[Container, _Binding] | None:
         if service in self._bindings:
-            return self._bindings[service]
+            return self, self._bindings[service]
         if self._parent is not None:
-            return self._parent._find_binding(service)
+            return self._parent._find_binding_owner(service)
         return None
 
     def _invoke_factory(
@@ -154,10 +174,15 @@ class Container:
                 continue
 
             param_type = hints.get(param_name)
-            if param_type is not None and isinstance(param_type, type):
-                binding = self._find_binding(param_type)
+            resolved_type = _resolve_param_type(
+                param_type,
+                factory_name=_callable_name(factory),
+                param_name=param_name,
+            )
+            if resolved_type.binding_key is not None:
+                binding = self._find_binding(resolved_type.binding_key)
                 if binding is not None:
-                    kwargs[param_name] = self._resolve(param_type, _stack=_stack)
+                    kwargs[param_name] = self._resolve(resolved_type.binding_key, _stack=_stack)
                     continue
 
             # No binding found — use default if available
@@ -174,7 +199,7 @@ class Container:
             raise ResolutionError(
                 f"Cannot resolve {factory.__name__}: "
                 f"missing binding for parameter '{param_name}' "
-                f"(type={param_type.__name__ if param_type else '?'}) "
+                f"(type={resolved_type.display_name}) "
                 f"({chain})"
             )
 
@@ -190,13 +215,78 @@ def _introspect_factory(
     except (ValueError, TypeError):
         return None
     hint_target = factory.__init__ if isinstance(factory, type) else factory
-    hints = _get_type_hints_safe(hint_target)
+    hints = _get_type_hints_or_raise(hint_target, factory_name=_callable_name(factory))
     return sig, hints
 
 
-def _get_type_hints_safe(fn: Callable[..., Any]) -> dict[str, Any]:
-    """Get type hints, resolving string annotations from ``from __future__ import annotations``."""
+def _get_type_hints_or_raise(
+    fn: Callable[..., Any],
+    *,
+    factory_name: str,
+) -> dict[str, Any]:
+    """Get runtime-resolvable type hints for a factory or constructor."""
     try:
-        return typing.get_type_hints(fn)
-    except (AttributeError, NameError, TypeError, ValueError):
-        return {}
+        return typing.get_type_hints(fn, include_extras=True)
+    except (AttributeError, NameError, TypeError, ValueError) as exc:
+        target_name = _callable_name(fn)
+        raise ResolutionError(
+            f"Cannot resolve {factory_name}: failed to evaluate type hints for "
+            f"{target_name}; make annotations importable at runtime or use an explicit "
+            f"factory ({exc.__class__.__name__}: {exc})"
+        ) from exc
+
+
+def _resolve_param_type(
+    param_type: Any,
+    *,
+    factory_name: str,
+    param_name: str,
+) -> _ResolvedParamType:
+    """Normalize a parameter annotation into a DI binding key and semantics."""
+    if param_type is None:
+        return _ResolvedParamType(binding_key=None, display_name="?")
+
+    origin = typing.get_origin(param_type)
+    if origin is typing.Annotated:
+        raise ResolutionError(
+            f"Cannot resolve {factory_name}: parameter '{param_name}' uses Annotated[...] "
+            "which miniject does not support; use an explicit factory instead"
+        )
+
+    if origin in _UNION_TYPES:
+        args = typing.get_args(param_type)
+        non_none_args = tuple(arg for arg in args if arg is not _NONE_TYPE)
+        if len(non_none_args) == 1 and len(non_none_args) != len(args):
+            inner = non_none_args[0]
+            inner_origin = typing.get_origin(inner)
+            if inner_origin is typing.Annotated:
+                raise ResolutionError(
+                    f"Cannot resolve {factory_name}: parameter '{param_name}' uses "
+                    "Annotated[...] which miniject does not support; use an explicit "
+                    "factory instead"
+                )
+            binding_key = inner if isinstance(inner, type) else None
+            return _ResolvedParamType(
+                binding_key=binding_key,
+                display_name=_format_type_name(param_type),
+            )
+
+    binding_key = param_type if isinstance(param_type, type) else None
+    return _ResolvedParamType(
+        binding_key=binding_key,
+        display_name=_format_type_name(param_type),
+    )
+
+
+def _format_type_name(param_type: Any) -> str:
+    """Render a readable type name for resolution errors."""
+    if param_type is None:
+        return "?"
+    if isinstance(param_type, type):
+        return param_type.__name__
+    return str(param_type).replace("typing.", "")
+
+
+def _callable_name(fn: Callable[..., Any]) -> str:
+    """Best-effort human-readable callable name for diagnostics."""
+    return getattr(fn, "__name__", fn.__class__.__name__)

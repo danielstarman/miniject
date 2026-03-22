@@ -4,7 +4,7 @@ Lightweight dependency injection container for Python. Auto-wires constructor
 dependencies from type hints, supports singleton and transient scopes, and
 provides scoped child containers for testing and per-context overrides.
 
-**~160 lines. Zero dependencies. Fully typed.**
+**Small codebase. Zero dependencies. Fully typed.**
 
 ## Installation
 
@@ -59,11 +59,18 @@ Register a service type. Four modes:
 | `bind(SomeType)` | Auto-wire from `__init__` type hints (transient) |
 | `bind(SomeType, instance=obj)` | Singleton by instance |
 | `bind(SomeType, factory=fn)` | Custom factory (transient) |
-| `bind(SomeType, factory=fn, singleton=True)` | Custom factory (singleton) |
+| `bind(SomeType, factory=fn, singleton=True)` | Custom factory (singleton, shared by child scopes) |
 
 **Auto-wiring** inspects constructor parameters via `typing.get_type_hints()`
 and resolves each typed parameter from the container. Parameters with default
-values are left to Python when no binding exists.
+values are left to Python when no binding exists. Nullable dependencies such as
+`Database | None = None` are supported: if `Database` is bound it is injected,
+otherwise Python keeps the default `None`.
+
+Type hints must be importable at runtime. If `get_type_hints()` cannot resolve
+an annotation, miniject raises `ResolutionError` instead of silently skipping
+injection. `Annotated[...]` is intentionally unsupported; use an explicit
+factory when metadata should influence construction.
 
 ### `container.resolve(service, **overrides)`
 
@@ -90,6 +97,9 @@ child.bind(Database, instance=test_db)    # override in child only
 child.resolve(UserRepo).database   # → test_db
 parent.resolve(UserRepo).database  # → production_db
 ```
+
+Singletons defined in the parent remain shared when resolved through a child
+scope. If a child re-binds a service, that override is isolated to the child.
 
 Use cases:
 - **Testing** — swap specific dependencies without rebuilding the whole graph
