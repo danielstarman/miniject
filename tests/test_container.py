@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier, Lock
 from typing import Annotated
 
 import pytest
@@ -229,6 +231,57 @@ def test_parent_singleton_dependency_is_shared_when_resolved_through_child() -> 
     child_repo = child.resolve(_Repo)
 
     assert parent_repo.database is child_repo.database
+
+
+def test_singleton_factory_is_initialized_once_under_concurrent_resolution() -> None:
+    start_barrier = Barrier(8)
+    call_count = 0
+    count_lock = Lock()
+
+    def _factory() -> _Database:
+        nonlocal call_count
+        with count_lock:
+            call_count += 1
+        return _Database("/shared")
+
+    c = Container()
+    c.bind(_Database, factory=_factory, singleton=True)
+
+    def _resolve(_: int) -> _Database:
+        start_barrier.wait()
+        return c.resolve(_Database)
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(_resolve, range(8)))
+
+    assert all(result is results[0] for result in results)
+    assert call_count == 1
+
+
+def test_parent_singleton_is_initialized_once_when_children_resolve_concurrently() -> None:
+    start_barrier = Barrier(8)
+    call_count = 0
+    count_lock = Lock()
+
+    def _factory() -> _Database:
+        nonlocal call_count
+        with count_lock:
+            call_count += 1
+        return _Database("/shared")
+
+    parent = Container()
+    parent.bind(_Database, factory=_factory, singleton=True)
+    children = [parent.scope() for _ in range(8)]
+
+    def _resolve(child: Container) -> _Database:
+        start_barrier.wait()
+        return child.resolve(_Database)
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(_resolve, children))
+
+    assert all(result is results[0] for result in results)
+    assert call_count == 1
 
 
 # ── default parameter behavior ───────────────────────────────────────
