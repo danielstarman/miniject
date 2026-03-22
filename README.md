@@ -153,19 +153,40 @@ singleton concurrently from multiple threads during startup, you may get
 duplicate instantiation. In practice this is not an issue when the container
 is fully resolved before serving requests.
 
+## When to use miniject
+
+miniject is a good fit when you want:
+
+- constructor injection from type hints
+- a tiny composition-root container with very little magic
+- child scopes for tests and context-specific overrides
+- explicit failure when runtime annotations are not actually resolvable
+
+miniject is probably **not** the right fit when you need:
+
+- async/resource lifecycle management
+- framework integration or function/method wiring
+- multiple qualified bindings for the same base type
+- extensive provider types, configuration loaders, or container metaprogramming
+
 ## Comparison
 
-miniject occupies a specific niche — if you need more, use a larger framework:
+miniject is intentionally narrower than larger Python DI frameworks.
 
-| Feature | miniject | dependency-injector | lagom | punq |
-|---------|----------|-------------------|-------|------|
-| Auto-wiring from type hints | ✅ | ✅ | ✅ | ✅ |
-| Scoped child containers | ✅ | ✅ | ❌ | ❌ |
-| Circular dep detection | ✅ | ❌ | ❌ | ❌ |
-| Async support | ❌ | ✅ | ✅ | ❌ |
-| Decorators / markers | ❌ | ✅ | ✅ | ❌ |
-| Dependencies | 0 | 1 | 0 | 0 |
-| Lines of code | ~160 | ~15k | ~3k | ~500 |
+- Compared with `dependency-injector`, miniject is much smaller and easier to
+  hold in your head, but it does not try to compete with provider graphs,
+  configuration providers, wiring, async resources, or broader framework
+  integrations.
+- Compared with `lagom`, miniject is more opinionated and lower-surface-area.
+  Lagom supports async usage, richer integrations, and more advanced type-driven
+  behavior. miniject aims to stay focused on composition-root constructor
+  injection.
+- Compared with `punq`, miniject lives in a more similar simplicity tier. The
+  main differences are miniject's scoped child containers, circular dependency
+  detection, and stricter stance on runtime-resolvable type hints.
+
+The goal is not to be the most powerful DI library. The goal is to be a small,
+predictable one that stays useful without turning into a framework.
 
 ## License
 
