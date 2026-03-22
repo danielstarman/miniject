@@ -52,6 +52,11 @@ ignore = [
 "tests/*.py" = ["ANN001", "PLR2004", "S101"]
 
 [tool.pyright]
-pythonPath = "src"
 include = ["src", "tests"]
+extraPaths = ["src"]
 typeCheckingMode = "strict"
+
+[[tool.pyright.executionEnvironments]]
+root = "tests"
+reportMissingParameterType = "none"
+reportUnknownParameterType = "none"
