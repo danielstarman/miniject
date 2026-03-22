@@ -1,0 +1,37 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "container"
+version = "1.0.0"
+description = "Lightweight dependency injection container with auto-wiring and scoped child containers."
+requires-python = ">=3.11"
+
+[project.optional-dependencies]
+dev = ["pytest", "pyright", "ruff"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/container"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = [
+    "ANN101",  # missing-type-self
+    "D",       # pydocstyle (docstrings covered manually)
+    "S101",    # assert in tests
+]
+
+[tool.pyright]
+pythonPath = "src"
+include = ["src", "tests"]
+typeCheckingMode = "strict"
