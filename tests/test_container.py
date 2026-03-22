@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Annotated
+
 import pytest
 
 from miniject import Container, ResolutionError
@@ -29,6 +31,31 @@ class _ServiceWithDefault:
     def __init__(self, database: _Database, timeout: int = 30) -> None:
         self.database = database
         self.timeout = timeout
+
+
+class _ServiceWithOptionalDatabaseDefault:
+    def __init__(self, database: _Database | None = None) -> None:
+        self.database = database
+
+
+class _ServiceWithOptionalDatabaseRequired:
+    def __init__(self, database: _Database | None) -> None:
+        self.database = database
+
+
+class _AnnotatedService:
+    def __init__(self, database: Annotated[_Database, "primary"]) -> None:
+        self.database = database
+
+
+class _MissingRuntimeHintService:
+    def __init__(self, database: _MissingRuntimeDependency) -> None:
+        self.database = database
+
+
+class _UntypedService:
+    def __init__(self, dependency) -> None:
+        self.dependency = dependency
 
 
 class _CircularA:
@@ -179,6 +206,31 @@ def test_scope_override_propagates_to_auto_wiring() -> None:
     assert child_repo.database.path == "/child"
 
 
+def test_parent_singleton_factory_is_shared_with_children() -> None:
+    parent = Container()
+    parent.bind(_Database, factory=lambda: _Database("/shared"), singleton=True)
+
+    child = parent.scope()
+
+    parent_db = parent.resolve(_Database)
+    child_db = child.resolve(_Database)
+
+    assert parent_db is child_db
+
+
+def test_parent_singleton_dependency_is_shared_when_resolved_through_child() -> None:
+    parent = Container()
+    parent.bind(_Database, factory=lambda: _Database("/shared"), singleton=True)
+    parent.bind(_Repo)
+
+    child = parent.scope()
+
+    parent_repo = parent.resolve(_Repo)
+    child_repo = child.resolve(_Repo)
+
+    assert parent_repo.database is child_repo.database
+
+
 # ── default parameter behavior ───────────────────────────────────────
 
 
@@ -202,6 +254,34 @@ def test_binding_overrides_default() -> None:
     svc = c.resolve(_ServiceWithDefault)
 
     assert svc.timeout == 99  # binding wins
+
+
+def test_optional_binding_overrides_none_default() -> None:
+    c = Container()
+    db = _Database("/bound")
+    c.bind(_Database, instance=db)
+    c.bind(_ServiceWithOptionalDatabaseDefault)
+
+    svc = c.resolve(_ServiceWithOptionalDatabaseDefault)
+
+    assert svc.database is db
+
+
+def test_optional_binding_uses_none_default_when_unbound() -> None:
+    c = Container()
+    c.bind(_ServiceWithOptionalDatabaseDefault)
+
+    svc = c.resolve(_ServiceWithOptionalDatabaseDefault)
+
+    assert svc.database is None
+
+
+def test_optional_binding_without_default_still_requires_binding() -> None:
+    c = Container()
+    c.bind(_ServiceWithOptionalDatabaseRequired)
+
+    with pytest.raises(ResolutionError, match="missing binding for parameter 'database'"):
+        c.resolve(_ServiceWithOptionalDatabaseRequired)
 
 
 # ── error handling ───────────────────────────────────────────────────
@@ -228,6 +308,31 @@ def test_missing_dep_shows_chain() -> None:
 
     with pytest.raises(ResolutionError, match="_Database"):
         c.resolve(_Repo)
+
+
+def test_annotated_dependency_requires_explicit_factory() -> None:
+    c = Container()
+    c.bind(_Database, instance=_Database())
+    c.bind(_AnnotatedService)
+
+    with pytest.raises(ResolutionError, match="Annotated"):
+        c.resolve(_AnnotatedService)
+
+
+def test_unresolvable_runtime_type_hints_raise_resolution_error() -> None:
+    c = Container()
+    c.bind(_MissingRuntimeHintService)
+
+    with pytest.raises(ResolutionError, match="failed to evaluate type hints"):
+        c.resolve(_MissingRuntimeHintService)
+
+
+def test_untyped_required_param_shows_unknown_type() -> None:
+    c = Container()
+    c.bind(_UntypedService)
+
+    with pytest.raises(ResolutionError, match=r"type=\?"):
+        c.resolve(_UntypedService)
 
 
 def test_circular_dependency_detected() -> None:
