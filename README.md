@@ -87,6 +87,10 @@ Resolve a service, recursively auto-wiring all dependencies. Keyword
 `overrides` are passed directly to the factory/constructor, bypassing the
 container for those parameters.
 
+Overrides are only supported for non-singleton resolutions. Resolving a
+singleton binding with overrides raises `ResolutionError`; use a child scope
+or an explicit factory when construction needs per-call inputs.
+
 Raises `ResolutionError` on missing bindings or circular dependencies, with
 a full dependency chain in the message.
 

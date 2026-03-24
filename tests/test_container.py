@@ -107,6 +107,14 @@ def test_instance_is_singleton() -> None:
     assert c.resolve(_Database) is c.resolve(_Database)
 
 
+def test_rebinding_singleton_replaces_cached_instance() -> None:
+    c = Container()
+    c.bind(_Database, instance=_Database("/first"))
+    c.bind(_Database, factory=lambda: _Database("/second"), singleton=True)
+
+    assert c.resolve(_Database).path == "/second"
+
+
 # ── bind + resolve: auto-wired ───────────────────────────────────────
 
 
@@ -167,6 +175,29 @@ def test_factory_singleton() -> None:
 
     assert d1 is d2
     assert d1.path == "/singleton"
+
+
+def test_singleton_factory_rejects_resolve_overrides() -> None:
+    c = Container()
+    c.bind(_Database, instance=_Database("/bound"))
+    c.bind(_Repo, singleton=True)
+
+    with pytest.raises(
+        ResolutionError,
+        match="overrides are not supported for singleton bindings",
+    ):
+        c.resolve(_Repo, database=_Database("/override"))
+
+
+def test_instance_singleton_rejects_resolve_overrides() -> None:
+    c = Container()
+    c.bind(_Database, instance=_Database("/bound"))
+
+    with pytest.raises(
+        ResolutionError,
+        match="overrides are not supported for singleton bindings",
+    ):
+        c.resolve(_Database, path="/override")
 
 
 def _repo_factory(database: _Database) -> _Repo:
@@ -246,6 +277,22 @@ def test_parent_singleton_dependency_is_shared_when_resolved_through_child() -> 
     child_repo = child.resolve(_Repo)
 
     assert parent_repo.database is child_repo.database
+
+
+def test_parent_singleton_does_not_capture_child_override_on_first_resolution() -> None:
+    parent = Container()
+    parent.bind(_Database, instance=_Database("/parent"))
+    parent.bind(_Repo, singleton=True)
+
+    child = parent.scope()
+    child.bind(_Database, instance=_Database("/child"))
+
+    child_repo = child.resolve(_Repo)
+    parent_repo = parent.resolve(_Repo)
+
+    assert child_repo is parent_repo
+    assert child_repo.database.path == "/parent"
+    assert parent_repo.database.path == "/parent"
 
 
 def test_singleton_factory_is_initialized_once_under_concurrent_resolution() -> None:

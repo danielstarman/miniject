@@ -36,21 +36,25 @@ class _ResolvedParamType:
     display_name: str
 
 
+@dataclass(frozen=True, slots=True)
 class _Binding:
     """Internal registration record."""
 
-    __slots__ = ("factory", "instance", "singleton")
+    provider_kind: typing.Literal["factory", "instance"]
+    provider: object
+    lifetime: typing.Literal["singleton", "transient"]
 
-    def __init__(
-        self,
-        *,
-        factory: Callable[..., Any] | None = None,
-        instance: object = _EMPTY,
-        singleton: bool = False,
-    ) -> None:
-        self.factory = factory
-        self.instance = instance
-        self.singleton = singleton
+    @classmethod
+    def from_factory(cls, factory: Callable[..., Any], *, singleton: bool) -> _Binding:
+        return cls(
+            provider_kind="factory",
+            provider=factory,
+            lifetime="singleton" if singleton else "transient",
+        )
+
+    @classmethod
+    def from_instance(cls, instance: object) -> _Binding:
+        return cls(provider_kind="instance", provider=instance, lifetime="singleton")
 
 
 class Container:
@@ -92,13 +96,14 @@ class Container:
         * ``bind(SomeType, factory=fn, singleton=True)`` — factory singleton
         """
         _validate_service_type(service)
+        self._singletons.pop(service, None)
         if instance is not _EMPTY:
-            self._bindings[service] = _Binding(instance=instance)
+            self._bindings[service] = _Binding.from_instance(instance)
             self._singletons[service] = instance
         elif factory is not None:
-            self._bindings[service] = _Binding(factory=factory, singleton=singleton)
+            self._bindings[service] = _Binding.from_factory(factory, singleton=singleton)
         else:
-            self._bindings[service] = _Binding(factory=service, singleton=singleton)
+            self._bindings[service] = _Binding.from_factory(service, singleton=singleton)
 
     def resolve(self, service: type[_T], **overrides: Any) -> _T:
         """Resolve a service, auto-wiring constructor dependencies.
@@ -129,23 +134,29 @@ class Container:
             raise ResolutionError(f"Cannot resolve {service.__name__}: no binding ({chain})")
         binding_owner, binding = binding_owner_and_binding
 
+        if overrides and binding.lifetime == "singleton":
+            raise ResolutionError(
+                f"Cannot resolve {service.__name__}: overrides are not supported "
+                "for singleton bindings; use a child scope or an explicit "
+                "factory instead",
+            )
+
         # Singleton factories should be shared and initialized safely where the
         # binding is defined.
-        if binding.singleton:
+        if binding.lifetime == "singleton":
             return cast(
                 "_T",
                 binding_owner._resolve_singleton(
                     service,
                     binding,
-                    requester=self,
                     stack=(*_stack, service),
                     overrides=overrides,
                 ),
             )
 
         # Instance binding (already stored)
-        if binding.instance is not _EMPTY:
-            return cast("_T", binding.instance)
+        if binding.provider_kind == "instance":
+            return cast("_T", binding.provider)
 
         # Factory binding
         factory = _require_factory(binding)
@@ -172,7 +183,6 @@ class Container:
         service: type,
         binding: _Binding,
         *,
-        requester: Container,
         stack: tuple[type, ...],
         overrides: dict[str, Any],
     ) -> object:
@@ -181,12 +191,12 @@ class Container:
             if existing is not _EMPTY:
                 return existing
 
-            if binding.instance is not _EMPTY:
-                self._singletons[service] = binding.instance
-                return binding.instance
+            if binding.provider_kind == "instance":
+                self._singletons[service] = binding.provider
+                return binding.provider
 
             factory = _require_factory(binding)
-            instance = requester._invoke_factory(
+            instance = self._invoke_factory(
                 factory,
                 _stack=stack,
                 **overrides,
@@ -337,11 +347,10 @@ def _callable_name(fn: Callable[..., Any]) -> str:
 
 def _require_factory(binding: _Binding) -> Callable[..., Any]:
     """Return a binding factory or raise if the binding is malformed."""
-    factory = binding.factory
-    if factory is None:
+    if binding.provider_kind != "factory":
         msg = "Binding is missing a factory"
         raise ResolutionError(msg)
-    return factory
+    return cast("Callable[..., Any]", binding.provider)
 
 
 def _validate_service_type(service: type[Any]) -> None:
