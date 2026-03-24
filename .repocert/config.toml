@@ -1,0 +1,37 @@
+schema_version = 1
+
+[local_policy]
+protected_branches = ["refs/heads/master"]
+require_clean_primary_checkout = true
+
+[hooks]
+mode = "generated"
+
+[hooks.generated]
+hooks = ["pre-commit", "pre-merge-commit", "pre-push", "update"]
+
+[checks.ruff_format]
+argv = [".venv/bin/python", "-m", "ruff", "format", "--check", "."]
+
+[checks.ruff_lint]
+argv = [".venv/bin/python", "-m", "ruff", "check", "."]
+
+[checks.pyright]
+argv = [".venv/bin/python", "-m", "pyright", "--pythonpath", ".venv/bin/python", "-p", "."]
+
+[checks.pytest]
+argv = [".venv/bin/python", "-m", "pytest", "-q"]
+
+[fixers.ruff_format]
+argv = [".venv/bin/python", "-m", "ruff", "format", "."]
+probe_argv = [".venv/bin/python", "-m", "ruff", "format", "--check", "."]
+
+[profiles.default]
+checks = ["ruff_format", "ruff_lint", "pyright", "pytest"]
+fixers = ["ruff_format"]
+certify = true
+default = true
+
+[[protected_refs]]
+pattern = "refs/heads/master"
+profile = "default"

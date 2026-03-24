@@ -205,7 +205,11 @@ class Container:
             return instance
 
     def _invoke_factory(
-        self, factory: Callable[..., Any], *, _stack: tuple[type, ...], **overrides: Any,
+        self,
+        factory: Callable[..., Any],
+        *,
+        _stack: tuple[type, ...],
+        **overrides: Any,
     ) -> Any:
         """Call a factory, resolving its parameters from the container."""
         sig_and_hints = _introspect_factory(factory)

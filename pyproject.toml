@@ -43,6 +43,7 @@ src = ["src", "tests"]
 select = ["ALL"]
 ignore = [
     "ANN401",  # Any is appropriate at runtime introspection boundaries
+    "COM812",  # handled by Ruff's formatter
     "D",       # pydocstyle (docstrings covered manually)
     "EM102",   # inline exception messages are fine for a small library
     "SLF001",  # container internals may coordinate through private helpers
