@@ -36,5 +36,8 @@ jobs:
       - name: Run Pyright
         run: uv run --locked pyright -p .
 
+      - name: Check test layout
+        run: uv run --locked python tools/check_test_layout.py
+
       - name: Run pytest
         run: uv run --locked pytest -q

@@ -1,21 +1,14 @@
-"""Tests for the DI container."""
+"""Tests for container resolution, scopes, and lifetimes."""
 
 from __future__ import annotations
 
 import asyncio
-import importlib.util
-import sys
-import uuid
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 from threading import Barrier, Lock
-from typing import Annotated, Any, cast
 
 import pytest
 
 from miniject import Container, ResolutionError
-
-# ── Test fixtures ────────────────────────────────────────────────────
 
 
 class _Database:
@@ -61,25 +54,6 @@ class _ServiceWithOptionalDatabaseRequired:
         self.database = database
 
 
-class _AnnotatedService:
-    def __init__(self, database: Annotated[_Database, "primary"]) -> None:
-        self.database = database
-
-
-class _MissingRuntimeDependency:
-    pass
-
-
-class _MissingRuntimeHintService:
-    def __init__(self, database: _MissingRuntimeDependency) -> None:
-        self.database = database
-
-
-class _UntypedService:
-    def __init__(self, dependency) -> None:
-        self.dependency = dependency
-
-
 class _CircularA:
     def __init__(self, b: _CircularB) -> None:
         self.b = b
@@ -90,103 +64,118 @@ class _CircularB:
         self.a = a
 
 
-# ── bind + resolve: instance ─────────────────────────────────────────
-
-
-def test_bind_instance_and_resolve() -> None:
+def test_resolve_bound_instance_returns_same_instance() -> None:
+    # Arrange
     c = Container()
     db = _Database("test.db")
     c.bind(_Database, instance=db)
 
+    # Act
     resolved = c.resolve(_Database)
 
+    # Assert
     assert resolved is db
     assert resolved.path == "test.db"
 
 
-def test_instance_is_singleton() -> None:
+def test_resolve_instance_binding_returns_same_instance_each_time() -> None:
+    # Arrange
     c = Container()
     db = _Database()
     c.bind(_Database, instance=db)
 
+    # Act + Assert
     assert c.resolve(_Database) is c.resolve(_Database)
 
 
-def test_rebinding_singleton_replaces_cached_instance() -> None:
+def test_bind_rebound_singleton_binding_replaces_cached_instance() -> None:
+    # Arrange
     c = Container()
     c.bind(_Database, instance=_Database("/first"))
     c.bind(_Database, factory=lambda: _Database("/second"), singleton=True)
 
+    # Act + Assert
     assert c.resolve(_Database).path == "/second"
 
 
-# ── bind + resolve: auto-wired ───────────────────────────────────────
-
-
-def test_auto_wire_transient() -> None:
+def test_resolve_autowired_transient_binding_returns_injected_instance() -> None:
+    # Arrange
     c = Container()
     c.bind(_Database, instance=_Database())
     c.bind(_Repo)
 
+    # Act
     repo = c.resolve(_Repo)
 
+    # Assert
     assert isinstance(repo, _Repo)
     assert isinstance(repo.database, _Database)
 
 
-def test_auto_wire_transient_creates_new_each_time() -> None:
+def test_resolve_autowired_transient_binding_returns_new_instance_each_time() -> None:
+    # Arrange
     c = Container()
     c.bind(_Database, instance=_Database())
     c.bind(_Repo)
 
+    # Act
     r1 = c.resolve(_Repo)
     r2 = c.resolve(_Repo)
 
+    # Assert
     assert r1 is not r2
-    assert r1.database is r2.database  # shared singleton Database
+    assert r1.database is r2.database
 
 
-def test_auto_wire_deep_chain() -> None:
+def test_resolve_autowired_deep_dependency_chain_returns_shared_dependency_graph() -> None:
+    # Arrange
     c = Container()
     c.bind(_Database, instance=_Database())
     c.bind(_Repo)
     c.bind(_Service)
 
+    # Act
     svc = c.resolve(_Service)
 
+    # Assert
     assert isinstance(svc.repo, _Repo)
     assert isinstance(svc.database, _Database)
-    assert svc.repo.database is svc.database  # same Database singleton
+    assert svc.repo.database is svc.database
 
 
-# ── bind + resolve: factory ──────────────────────────────────────────
-
-
-def test_factory_transient() -> None:
+def test_resolve_transient_factory_binding_returns_factory_result() -> None:
+    # Arrange
     c = Container()
     c.bind(_Database, factory=lambda: _Database("/custom"))
 
+    # Act
     db = c.resolve(_Database)
 
+    # Assert
     assert db.path == "/custom"
 
 
-def test_factory_singleton() -> None:
+def test_resolve_singleton_factory_binding_returns_cached_instance() -> None:
+    # Arrange
     c = Container()
     c.bind(_Database, factory=lambda: _Database("/singleton"), singleton=True)
 
+    # Act
     d1 = c.resolve(_Database)
     d2 = c.resolve(_Database)
 
+    # Assert
     assert d1 is d2
     assert d1.path == "/singleton"
 
 
-def test_singleton_factory_rejects_resolve_overrides() -> None:
+def test_resolve_singleton_factory_binding_with_overrides_raises_resolution_error() -> None:
+    # Arrange
     c = Container()
     c.bind(_Database, instance=_Database("/bound"))
     c.bind(_Repo, singleton=True)
 
+    # Act + Assert
     with pytest.raises(
         ResolutionError,
         match="overrides are not supported for singleton bindings",
@@ -194,10 +183,12 @@ def test_singleton_factory_rejects_resolve_overrides() -> None:
         c.resolve(_Repo, database=_Database("/override"))
 
 
-def test_instance_singleton_rejects_resolve_overrides() -> None:
+def test_resolve_instance_binding_with_overrides_raises_resolution_error() -> None:
+    # Arrange
     c = Container()
     c.bind(_Database, instance=_Database("/bound"))
 
+    # Act + Assert
     with pytest.raises(
         ResolutionError,
         match="overrides are not supported for singleton bindings",
@@ -209,13 +200,16 @@ def _repo_factory(database: _Database) -> _Repo:
     return _Repo(database)
 
 
-def test_factory_with_deps() -> None:
+def test_resolve_factory_binding_with_dependencies_injects_factory_arguments() -> None:
+    # Arrange
     c = Container()
     c.bind(_Database, instance=_Database())
     c.bind(_Repo, factory=_repo_factory)
 
+    # Act
     repo = c.resolve(_Repo)
 
+    # Assert
     assert isinstance(repo.database, _Database)
 
 
@@ -229,10 +223,12 @@ async def _async_repo_factory(database: _Database) -> _Repo:
     return _Repo(database)
 
 
-def test_sync_resolve_rejects_async_factory() -> None:
+def test_resolve_async_factory_binding_raises_resolution_error() -> None:
+    # Arrange
     c = Container()
     c.bind(_Database, factory=_async_database_factory)
 
+    # Act + Assert
     with pytest.raises(
         ResolutionError,
         match=r"Cannot resolve _Database: factory '_async_database_factory' is async; "
@@ -241,11 +237,13 @@ def test_sync_resolve_rejects_async_factory() -> None:
         c.resolve(_Database)
 
 
-def test_sync_resolve_shows_chain_for_indirect_async_dependency() -> None:
+def test_resolve_indirect_async_dependency_includes_resolution_chain() -> None:
+    # Arrange
     c = Container()
     c.bind(_Database, factory=_async_database_factory)
     c.bind(_Repo)
 
+    # Act + Assert
     with pytest.raises(
         ResolutionError,
         match=r"Cannot resolve _Database: factory '_async_database_factory' is async; "
@@ -254,46 +252,56 @@ def test_sync_resolve_shows_chain_for_indirect_async_dependency() -> None:
         c.resolve(_Repo)
 
 
-def test_async_resolve_supports_async_factory() -> None:
+def test_resolve_async_async_factory_binding_returns_factory_result() -> None:
     async def _run() -> None:
+        # Arrange
         c = Container()
         c.bind(_Database, factory=_async_database_factory)
 
+        # Act
         db = await c.resolve_async(_Database)
 
+        # Assert
         assert db.path == "/async"
 
     asyncio.run(_run())
 
 
-def test_async_resolve_supports_async_factory_dependencies() -> None:
+def test_resolve_async_async_factory_dependencies_awaits_nested_factories() -> None:
     async def _run() -> None:
+        # Arrange
         c = Container()
         c.bind(_Database, factory=_async_database_factory)
         c.bind(_Repo, factory=_async_repo_factory)
 
+        # Act
         repo = await c.resolve_async(_Repo)
 
+        # Assert
         assert repo.database.path == "/async"
 
     asyncio.run(_run())
 
 
-def test_async_resolve_can_auto_wire_sync_types_over_async_dependencies() -> None:
+def test_resolve_async_autowired_sync_type_with_async_dependency_returns_instance() -> None:
     async def _run() -> None:
+        # Arrange
         c = Container()
         c.bind(_Database, factory=_async_database_factory)
         c.bind(_Repo)
 
+        # Act
         repo = await c.resolve_async(_Repo)
 
+        # Assert
         assert repo.database.path == "/async"
 
     asyncio.run(_run())
 
 
-def test_async_singleton_factory_is_initialized_once_under_concurrent_resolution() -> None:
+def test_resolve_async_concurrent_singleton_factory_initializes_once() -> None:
     async def _run() -> None:
+        # Arrange
         call_count = 0
         count_lock = Lock()
 
@@ -307,34 +315,41 @@ def test_async_singleton_factory_is_initialized_once_under_concurrent_resolution
         c = Container()
         c.bind(_Database, factory=_factory, singleton=True)
 
+        # Act
         results = await asyncio.gather(*(c.resolve_async(_Database) for _ in range(8)))
 
+        # Assert
         assert all(result is results[0] for result in results)
         assert call_count == 1
 
     asyncio.run(_run())
 
 
-def test_async_resolve_supports_sync_factory_with_override() -> None:
+def test_resolve_async_sync_factory_with_overrides_returns_override_result() -> None:
     async def _run() -> None:
+        # Arrange
         def _factory(path: str = "/custom") -> _Database:
             return _Database(path)
 
         c = Container()
         c.bind(_Database, factory=_factory)
 
+        # Act
         db = await c.resolve_async(_Database, path="/override")
 
+        # Assert
         assert db.path == "/override"
 
     asyncio.run(_run())
 
 
-def test_async_singleton_rejects_overrides() -> None:
+def test_resolve_async_singleton_binding_with_overrides_raises_resolution_error() -> None:
     async def _run() -> None:
+        # Arrange
         c = Container()
         c.bind(_Database, factory=_async_database_factory, singleton=True)
 
+        # Act + Assert
         with pytest.raises(
             ResolutionError,
             match="overrides are not supported for singleton bindings",
@@ -344,39 +359,47 @@ def test_async_singleton_rejects_overrides() -> None:
     asyncio.run(_run())
 
 
-def test_async_scope_inherits_parent_bindings() -> None:
+def test_resolve_async_child_scope_with_parent_bindings_returns_parent_dependency() -> None:
     async def _run() -> None:
+        # Arrange
         parent = Container()
         parent.bind(_Database, factory=_async_database_factory)
         parent.bind(_Repo)
 
         child = parent.scope()
+
+        # Act
         repo = await child.resolve_async(_Repo)
 
+        # Assert
         assert repo.database.path == "/async"
 
     asyncio.run(_run())
 
 
-def test_async_scope_override_does_not_affect_parent() -> None:
+def test_resolve_async_child_scope_override_keeps_parent_binding_unchanged() -> None:
     async def _run() -> None:
+        # Arrange
         parent = Container()
         parent.bind(_Database, instance=_Database("/parent"))
 
         child = parent.scope()
         child.bind(_Database, factory=_async_database_factory)
 
+        # Act
         parent_db = parent.resolve(_Database)
         child_db = await child.resolve_async(_Database)
 
+        # Assert
         assert parent_db.path == "/parent"
         assert child_db.path == "/async"
 
     asyncio.run(_run())
 
 
-def test_async_parent_singleton_factory_is_shared_with_children() -> None:
+def test_resolve_async_parent_singleton_binding_across_children_returns_shared_instance() -> None:
     async def _run() -> None:
+        # Arrange
         call_count = 0
         count_lock = Lock()
 
@@ -391,16 +414,19 @@ def test_async_parent_singleton_factory_is_shared_with_children() -> None:
         parent.bind(_Database, factory=_factory, singleton=True)
         children = [parent.scope() for _ in range(8)]
 
+        # Act
         results = await asyncio.gather(*(child.resolve_async(_Database) for child in children))
 
+        # Assert
         assert all(result is results[0] for result in results)
         assert call_count == 1
 
     asyncio.run(_run())
 
 
-def test_async_parent_singleton_does_not_capture_child_override_on_first_resolution() -> None:
+def test_resolve_async_parent_singleton_first_resolved_in_child_ignores_child_override() -> None:
     async def _run() -> None:
+        # Arrange
         parent = Container()
         parent.bind(_Database, instance=_Database("/parent"))
         parent.bind(_Repo, factory=_async_repo_factory, singleton=True)
@@ -408,9 +434,11 @@ def test_async_parent_singleton_does_not_capture_child_override_on_first_resolut
         child = parent.scope()
         child.bind(_Database, instance=_Database("/child"))
 
+        # Act
         child_repo = await child.resolve_async(_Repo)
         parent_repo = await parent.resolve_async(_Repo)
 
+        # Assert
         assert child_repo is parent_repo
         assert child_repo.database.path == "/parent"
         assert parent_repo.database.path == "/parent"
@@ -418,44 +446,50 @@ def test_async_parent_singleton_does_not_capture_child_override_on_first_resolut
     asyncio.run(_run())
 
 
-def test_async_resolve_rejects_circular_dependencies() -> None:
+def test_resolve_async_circular_dependency_graph_raises_resolution_error() -> None:
     async def _run() -> None:
+        # Arrange
         c = Container()
         c.bind(_CircularA)
         c.bind(_CircularB)
 
+        # Act + Assert
         with pytest.raises(ResolutionError, match="Circular dependency"):
             await c.resolve_async(_CircularA)
 
     asyncio.run(_run())
 
 
-# ── scope (child containers) ─────────────────────────────────────────
-
-
-def test_scope_inherits_parent_bindings() -> None:
+def test_scope_child_container_inherits_parent_bindings() -> None:
+    # Arrange
     parent = Container()
     parent.bind(_Database, instance=_Database("/parent"))
     parent.bind(_Repo)
 
     child = parent.scope()
+
+    # Act
     repo = child.resolve(_Repo)
 
+    # Assert
     assert repo.database.path == "/parent"
 
 
-def test_scope_override_does_not_affect_parent() -> None:
+def test_scope_child_override_keeps_parent_binding_unchanged() -> None:
+    # Arrange
     parent = Container()
     parent.bind(_Database, instance=_Database("/parent"))
 
     child = parent.scope()
     child.bind(_Database, instance=_Database("/child"))
 
+    # Act + Assert
     assert parent.resolve(_Database).path == "/parent"
     assert child.resolve(_Database).path == "/child"
 
 
-def test_scope_override_propagates_to_auto_wiring() -> None:
+def test_resolve_child_scope_override_used_for_autowiring() -> None:
+    # Arrange
     parent = Container()
     parent.bind(_Database, instance=_Database("/parent"))
     parent.bind(_Repo)
@@ -463,39 +497,48 @@ def test_scope_override_propagates_to_auto_wiring() -> None:
     child = parent.scope()
     child.bind(_Database, instance=_Database("/child"))
 
+    # Act
     parent_repo = parent.resolve(_Repo)
     child_repo = child.resolve(_Repo)
 
+    # Assert
     assert parent_repo.database.path == "/parent"
     assert child_repo.database.path == "/child"
 
 
-def test_parent_singleton_factory_is_shared_with_children() -> None:
+def test_resolve_parent_singleton_binding_through_child_returns_shared_instance() -> None:
+    # Arrange
     parent = Container()
     parent.bind(_Database, factory=lambda: _Database("/shared"), singleton=True)
 
     child = parent.scope()
 
+    # Act
     parent_db = parent.resolve(_Database)
     child_db = child.resolve(_Database)
 
+    # Assert
     assert parent_db is child_db
 
 
-def test_parent_singleton_dependency_is_shared_when_resolved_through_child() -> None:
+def test_resolve_child_service_with_parent_singleton_dependency_reuses_parent_singleton() -> None:
+    # Arrange
     parent = Container()
     parent.bind(_Database, factory=lambda: _Database("/shared"), singleton=True)
     parent.bind(_Repo)
 
     child = parent.scope()
 
+    # Act
     parent_repo = parent.resolve(_Repo)
     child_repo = child.resolve(_Repo)
 
+    # Assert
     assert parent_repo.database is child_repo.database
 
 
-def test_parent_singleton_does_not_capture_child_override_on_first_resolution() -> None:
+def test_resolve_parent_singleton_first_resolved_in_child_ignores_child_override() -> None:
+    # Arrange
     parent = Container()
     parent.bind(_Database, instance=_Database("/parent"))
     parent.bind(_Repo, singleton=True)
@@ -503,15 +546,18 @@ def test_parent_singleton_does_not_capture_child_override_on_first_resolution() 
     child = parent.scope()
     child.bind(_Database, instance=_Database("/child"))
 
+    # Act
     child_repo = child.resolve(_Repo)
     parent_repo = parent.resolve(_Repo)
 
+    # Assert
     assert child_repo is parent_repo
     assert child_repo.database.path == "/parent"
     assert parent_repo.database.path == "/parent"
 
 
-def test_singleton_factory_is_initialized_once_under_concurrent_resolution() -> None:
+def test_resolve_concurrent_singleton_factory_initializes_once() -> None:
+    # Arrange
     start_barrier = Barrier(8)
     call_count = 0
     count_lock = Lock()
@@ -529,14 +575,17 @@ def test_singleton_factory_is_initialized_once_under_concurrent_resolution() -> 
         start_barrier.wait()
         return c.resolve(_Database)
 
+    # Act
     with ThreadPoolExecutor(max_workers=8) as pool:
         results = list(pool.map(_resolve, range(8)))
 
+    # Assert
     assert all(result is results[0] for result in results)
     assert call_count == 1
 
 
-def test_parent_singleton_is_initialized_once_when_children_resolve_concurrently() -> None:
+def test_resolve_concurrent_child_scope_access_to_parent_singleton_initializes_once() -> None:
+    # Arrange
     start_barrier = Barrier(8)
     call_count = 0
     count_lock = Lock()
@@ -555,209 +604,116 @@ def test_parent_singleton_is_initialized_once_when_children_resolve_concurrently
         start_barrier.wait()
         return child.resolve(_Database)
 
+    # Act
     with ThreadPoolExecutor(max_workers=8) as pool:
         results = list(pool.map(_resolve, children))
 
+    # Assert
     assert all(result is results[0] for result in results)
     assert call_count == 1
 
 
-# ── default parameter behavior ───────────────────────────────────────
-
-
-def test_default_used_when_no_binding() -> None:
+def test_resolve_unbound_parameter_with_default_uses_default_value() -> None:
+    # Arrange
     c = Container()
     c.bind(_Database, instance=_Database())
     c.bind(_ServiceWithDefault)
 
+    # Act
     svc = c.resolve(_ServiceWithDefault)
 
-    assert svc.timeout == 30  # default preserved
+    # Assert
+    assert svc.timeout == 30
 
 
-def test_scalar_bindings_are_rejected() -> None:
-    c = Container()
-
-    with pytest.raises(TypeError, match="scalar builtins"):
-        c.bind(int, instance=99)
-
-
-def test_typed_value_object_binding_is_injected() -> None:
+def test_resolve_typed_value_object_binding_injects_bound_instance() -> None:
+    # Arrange
     c = Container()
     settings = _TimeoutSettings(99)
     c.bind(_Database, instance=_Database())
     c.bind(_TimeoutSettings, instance=settings)
     c.bind(_ServiceWithSettings)
 
+    # Act
     svc = c.resolve(_ServiceWithSettings)
 
+    # Assert
     assert svc.settings is settings
     assert svc.settings.seconds == 99
 
 
-def test_optional_binding_overrides_none_default() -> None:
+def test_resolve_optional_binding_with_bound_value_overrides_none_default() -> None:
+    # Arrange
     c = Container()
     db = _Database("/bound")
     c.bind(_Database, instance=db)
     c.bind(_ServiceWithOptionalDatabaseDefault)
 
+    # Act
     svc = c.resolve(_ServiceWithOptionalDatabaseDefault)
 
+    # Assert
     assert svc.database is db
 
 
-def test_optional_binding_uses_none_default_when_unbound() -> None:
+def test_resolve_optional_binding_without_binding_uses_none_default() -> None:
+    # Arrange
     c = Container()
     c.bind(_ServiceWithOptionalDatabaseDefault)
 
+    # Act
     svc = c.resolve(_ServiceWithOptionalDatabaseDefault)
 
+    # Assert
     assert svc.database is None
 
 
-def test_optional_binding_without_default_still_requires_binding() -> None:
+def test_resolve_required_optional_binding_without_binding_raises_resolution_error() -> None:
+    # Arrange
     c = Container()
     c.bind(_ServiceWithOptionalDatabaseRequired)
 
+    # Act + Assert
     with pytest.raises(ResolutionError, match="missing binding for parameter 'database'"):
         c.resolve(_ServiceWithOptionalDatabaseRequired)
 
 
-# ── error handling ───────────────────────────────────────────────────
+def test_resolve_bound_none_instance_returns_none() -> None:
+    """None is a valid instance value and should not fall through to auto-wiring."""
 
-
-def test_bind_none_instance() -> None:
-    """None is a valid instance value — it should not fall through to auto-wiring."""
+    # Arrange
     c = Container()
     c.bind(type(None), instance=None)
 
+    # Act + Assert
     assert c.resolve(type(None)) is None
 
 
-def test_missing_binding_raises_resolution_error() -> None:
+def test_resolve_unbound_service_raises_resolution_error() -> None:
+    # Arrange
     c = Container()
 
+    # Act + Assert
     with pytest.raises(ResolutionError, match="no binding"):
         c.resolve(_Database)
 
 
-def test_missing_dep_shows_chain() -> None:
+def test_resolve_missing_dependency_includes_dependency_chain() -> None:
+    # Arrange
     c = Container()
-    c.bind(_Repo)  # needs _Database but it's not registered
+    c.bind(_Repo)
 
+    # Act + Assert
     with pytest.raises(ResolutionError, match="_Database"):
         c.resolve(_Repo)
 
 
-def test_annotated_dependency_requires_explicit_factory() -> None:
-    c = Container()
-    c.bind(_Database, instance=_Database())
-    c.bind(_AnnotatedService)
-
-    with pytest.raises(ResolutionError, match="Annotated"):
-        c.resolve(_AnnotatedService)
-
-
-def test_unresolvable_runtime_type_hints_raise_resolution_error() -> None:
-    c = Container()
-    c.bind(_MissingRuntimeHintService)
-
-    original = globals().pop("_MissingRuntimeDependency")
-    try:
-        with pytest.raises(ResolutionError, match="failed to evaluate type hints"):
-            c.resolve(_MissingRuntimeHintService)
-    finally:
-        globals()["_MissingRuntimeDependency"] = original
-
-
-def test_untyped_required_param_shows_unknown_type() -> None:
-    c = Container()
-    c.bind(_UntypedService)
-
-    with pytest.raises(ResolutionError, match=r"type=\?"):
-        c.resolve(_UntypedService)
-
-
-def test_circular_dependency_detected() -> None:
+def test_resolve_circular_dependency_graph_raises_resolution_error() -> None:
+    # Arrange
     c = Container()
     c.bind(_CircularA)
     c.bind(_CircularB)
 
+    # Act + Assert
     with pytest.raises(ResolutionError, match="Circular dependency"):
         c.resolve(_CircularA)
-
-
-def _load_module_from_source(tmp_path: Path, source: str) -> dict[str, object]:
-    module_name = f"_miniject_test_{uuid.uuid4().hex}"
-    module_path = tmp_path / f"{module_name}.py"
-    module_path.write_text(source, encoding="utf-8")
-
-    spec = importlib.util.spec_from_file_location(module_name, module_path)
-    assert spec is not None
-    assert spec.loader is not None
-
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = module
-    try:
-        spec.loader.exec_module(module)
-    finally:
-        sys.modules.pop(module_name, None)
-    return module.__dict__
-
-
-def test_resolve_deferred_forward_reference_type_hints_in_runtime_annotations_injects_dependency(
-    tmp_path: Path,
-) -> None:
-    if sys.version_info < (3, 14):
-        pytest.skip("Python 3.14+ only")
-
-    namespace = _load_module_from_source(
-        tmp_path,
-        """
-class Repo:
-    def __init__(self, database: Database) -> None:
-        self.database = database
-
-class Database:
-    def __init__(self, path: str = ":memory:") -> None:
-        self.path = path
-""",
-    )
-
-    repo_type = cast("type[Any]", namespace["Repo"])
-    database_type = cast("type[Any]", namespace["Database"])
-    assert isinstance(repo_type, type)
-    assert isinstance(database_type, type)
-
-    c = Container()
-    c.bind(database_type, instance=database_type("/deferred"))
-    c.bind(repo_type)
-
-    repo = c.resolve(repo_type)
-
-    assert repo.database.path == "/deferred"
-
-
-def test_resolve_unresolvable_runtime_deferred_annotations_raises_resolution_error(
-    tmp_path: Path,
-) -> None:
-    if sys.version_info < (3, 14):
-        pytest.skip("Python 3.14+ only")
-
-    namespace = _load_module_from_source(
-        tmp_path,
-        """
-class Service:
-    def __init__(self, dependency: MissingType) -> None:
-        self.dependency = dependency
-""",
-    )
-
-    service_type = cast("type[Any]", namespace["Service"])
-    assert isinstance(service_type, type)
-
-    c = Container()
-    c.bind(service_type)
-
-    with pytest.raises(ResolutionError, match="failed to evaluate type hints"):
-        c.resolve(service_type)

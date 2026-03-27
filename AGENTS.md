@@ -62,6 +62,9 @@ If they diverge:
 - Keep core container semantics separate from helper or workflow code.
 - Keep binding registration, resolution, lifetime management, and error reporting conceptually distinct.
 - Prefer inspectable behavior over hidden magic.
+- Mirror source modules with corresponding test modules in `tests/` when adding or splitting code.
+- Prefer behavior-based test names in the form `MethodUnderTest_BehaviorBeingTested_ExpectedResult`.
+- Prefer an explicit `Arrange`, `Act`, `Assert` test structure when it improves readability; use `Act + Assert` when those steps are naturally combined.
 - Do not treat passing tests alone as sufficient if intended DI semantics would be violated.
 - When the same semantic concept appears in multiple places, prefer promoting it into a named model over repeating ad hoc flags or tuples.
 - Prefer narrow, honest abstractions over generic extension mechanisms.

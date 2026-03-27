@@ -24,6 +24,7 @@ checks:
 - `uv run --locked ruff format --check .`
 - `uv run --locked ruff check .`
 - `uv run --locked pyright -p .`
+- `uv run --locked python tools/check_test_layout.py`
 - `uv run --locked pytest -q`
 
 You can run them through `repocert`:
@@ -45,6 +46,31 @@ repocert certify --signing-key /path/to/private/key
 
 `uv sync` creates a repo-local `.venv` next to `pyproject.toml`, so run it once
 per worktree or fresh checkout.
+
+## Tests
+
+Prefer behavior-based test names in the form
+`MethodUnderTest_BehaviorBeingTested_ExpectedResult`.
+
+Mirror source modules in `tests/`:
+
+- `src/miniject/_container.py` -> `tests/test_container.py`
+- `src/miniject/_introspection.py` -> `tests/test_introspection.py`
+
+In pytest terms, that means names like:
+
+- `test_resolve_unbound_service_raises_resolution_error`
+- `test_scope_child_override_keeps_parent_binding_unchanged`
+
+Use judgment, but keep test names explicit about:
+
+- the method or API surface under test
+- the specific behavior or scenario being exercised
+- the expected outcome
+
+Prefer an explicit `Arrange`, `Act`, `Assert` structure inside tests when it
+improves readability. When a test naturally combines the last two steps, use
+`Act + Assert`.
 
 ## Hooks
 

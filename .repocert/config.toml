@@ -23,6 +23,9 @@ argv = ["uv", "run", "--locked", "ruff", "check", "."]
 [checks.pyright]
 argv = ["uv", "run", "--locked", "pyright", "-p", "."]
 
+[checks.test_layout]
+argv = ["uv", "run", "--locked", "python", "tools/check_test_layout.py"]
+
 [checks.pytest]
 argv = ["uv", "run", "--locked", "pytest", "-q"]
 
@@ -31,7 +34,7 @@ argv = ["uv", "run", "--locked", "ruff", "format", "."]
 probe_argv = ["uv", "run", "--locked", "ruff", "format", "--check", "."]
 
 [profiles.default]
-checks = ["ruff_format", "ruff_lint", "pyright", "pytest"]
+checks = ["ruff_format", "ruff_lint", "pyright", "test_layout", "pytest"]
 fixers = ["ruff_format"]
 certify = true
 default = true
