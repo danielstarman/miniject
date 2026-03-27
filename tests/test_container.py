@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier, Lock
 from typing import Annotated
@@ -212,6 +213,217 @@ def test_factory_with_deps() -> None:
     repo = c.resolve(_Repo)
 
     assert isinstance(repo.database, _Database)
+
+
+async def _async_database_factory() -> _Database:
+    await asyncio.sleep(0)
+    return _Database("/async")
+
+
+async def _async_repo_factory(database: _Database) -> _Repo:
+    await asyncio.sleep(0)
+    return _Repo(database)
+
+
+def test_sync_resolve_rejects_async_factory() -> None:
+    c = Container()
+    c.bind(_Database, factory=_async_database_factory)
+
+    with pytest.raises(
+        ResolutionError,
+        match=r"Cannot resolve _Database: factory '_async_database_factory' is async; "
+        r"use resolve_async\(\) \(_Database\)",
+    ):
+        c.resolve(_Database)
+
+
+def test_sync_resolve_shows_chain_for_indirect_async_dependency() -> None:
+    c = Container()
+    c.bind(_Database, factory=_async_database_factory)
+    c.bind(_Repo)
+
+    with pytest.raises(
+        ResolutionError,
+        match=r"Cannot resolve _Database: factory '_async_database_factory' is async; "
+        r"use resolve_async\(\) \(_Repo -> _Database\)",
+    ):
+        c.resolve(_Repo)
+
+
+def test_async_resolve_supports_async_factory() -> None:
+    async def _run() -> None:
+        c = Container()
+        c.bind(_Database, factory=_async_database_factory)
+
+        db = await c.resolve_async(_Database)
+
+        assert db.path == "/async"
+
+    asyncio.run(_run())
+
+
+def test_async_resolve_supports_async_factory_dependencies() -> None:
+    async def _run() -> None:
+        c = Container()
+        c.bind(_Database, factory=_async_database_factory)
+        c.bind(_Repo, factory=_async_repo_factory)
+
+        repo = await c.resolve_async(_Repo)
+
+        assert repo.database.path == "/async"
+
+    asyncio.run(_run())
+
+
+def test_async_resolve_can_auto_wire_sync_types_over_async_dependencies() -> None:
+    async def _run() -> None:
+        c = Container()
+        c.bind(_Database, factory=_async_database_factory)
+        c.bind(_Repo)
+
+        repo = await c.resolve_async(_Repo)
+
+        assert repo.database.path == "/async"
+
+    asyncio.run(_run())
+
+
+def test_async_singleton_factory_is_initialized_once_under_concurrent_resolution() -> None:
+    async def _run() -> None:
+        call_count = 0
+        count_lock = Lock()
+
+        async def _factory() -> _Database:
+            nonlocal call_count
+            await asyncio.sleep(0)
+            with count_lock:
+                call_count += 1
+            return _Database("/shared-async")
+
+        c = Container()
+        c.bind(_Database, factory=_factory, singleton=True)
+
+        results = await asyncio.gather(*(c.resolve_async(_Database) for _ in range(8)))
+
+        assert all(result is results[0] for result in results)
+        assert call_count == 1
+
+    asyncio.run(_run())
+
+
+def test_async_resolve_supports_sync_factory_with_override() -> None:
+    async def _run() -> None:
+        def _factory(path: str = "/custom") -> _Database:
+            return _Database(path)
+
+        c = Container()
+        c.bind(_Database, factory=_factory)
+
+        db = await c.resolve_async(_Database, path="/override")
+
+        assert db.path == "/override"
+
+    asyncio.run(_run())
+
+
+def test_async_singleton_rejects_overrides() -> None:
+    async def _run() -> None:
+        c = Container()
+        c.bind(_Database, factory=_async_database_factory, singleton=True)
+
+        with pytest.raises(
+            ResolutionError,
+            match="overrides are not supported for singleton bindings",
+        ):
+            await c.resolve_async(_Database, path="/override")
+
+    asyncio.run(_run())
+
+
+def test_async_scope_inherits_parent_bindings() -> None:
+    async def _run() -> None:
+        parent = Container()
+        parent.bind(_Database, factory=_async_database_factory)
+        parent.bind(_Repo)
+
+        child = parent.scope()
+        repo = await child.resolve_async(_Repo)
+
+        assert repo.database.path == "/async"
+
+    asyncio.run(_run())
+
+
+def test_async_scope_override_does_not_affect_parent() -> None:
+    async def _run() -> None:
+        parent = Container()
+        parent.bind(_Database, instance=_Database("/parent"))
+
+        child = parent.scope()
+        child.bind(_Database, factory=_async_database_factory)
+
+        parent_db = parent.resolve(_Database)
+        child_db = await child.resolve_async(_Database)
+
+        assert parent_db.path == "/parent"
+        assert child_db.path == "/async"
+
+    asyncio.run(_run())
+
+
+def test_async_parent_singleton_factory_is_shared_with_children() -> None:
+    async def _run() -> None:
+        call_count = 0
+        count_lock = Lock()
+
+        async def _factory() -> _Database:
+            nonlocal call_count
+            await asyncio.sleep(0)
+            with count_lock:
+                call_count += 1
+            return _Database("/shared-async")
+
+        parent = Container()
+        parent.bind(_Database, factory=_factory, singleton=True)
+        children = [parent.scope() for _ in range(8)]
+
+        results = await asyncio.gather(*(child.resolve_async(_Database) for child in children))
+
+        assert all(result is results[0] for result in results)
+        assert call_count == 1
+
+    asyncio.run(_run())
+
+
+def test_async_parent_singleton_does_not_capture_child_override_on_first_resolution() -> None:
+    async def _run() -> None:
+        parent = Container()
+        parent.bind(_Database, instance=_Database("/parent"))
+        parent.bind(_Repo, factory=_async_repo_factory, singleton=True)
+
+        child = parent.scope()
+        child.bind(_Database, instance=_Database("/child"))
+
+        child_repo = await child.resolve_async(_Repo)
+        parent_repo = await parent.resolve_async(_Repo)
+
+        assert child_repo is parent_repo
+        assert child_repo.database.path == "/parent"
+        assert parent_repo.database.path == "/parent"
+
+    asyncio.run(_run())
+
+
+def test_async_resolve_rejects_circular_dependencies() -> None:
+    async def _run() -> None:
+        c = Container()
+        c.bind(_CircularA)
+        c.bind(_CircularB)
+
+        with pytest.raises(ResolutionError, match="Circular dependency"):
+            await c.resolve_async(_CircularA)
+
+    asyncio.run(_run())
 
 
 # ── scope (child containers) ─────────────────────────────────────────

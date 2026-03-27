@@ -8,15 +8,18 @@ injection.
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import types
 import typing
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from threading import RLock
 from typing import Any, TypeVar, cast
 
 _T = TypeVar("_T")
+_SyncFactory = Callable[..., _T]
+_AsyncFactory = Callable[..., Awaitable[_T]]
 
 _EMPTY: object = object()
 _DISALLOWED_AUTO_INJECT_TYPES: frozenset[type] = frozenset({bool, bytes, float, int, str})
@@ -77,6 +80,7 @@ class Container:
     def __init__(self, *, _parent: Container | None = None) -> None:
         self._bindings: dict[type, _Binding] = {}
         self._singletons: dict[type, object] = {}
+        self._pending_async_singletons: dict[type, asyncio.Task[object]] = {}
         self._parent = _parent
         self._lock = RLock()
 
@@ -84,7 +88,7 @@ class Container:
         self,
         service: type[_T],
         *,
-        factory: Callable[..., _T] | None = None,
+        factory: _SyncFactory[_T] | _AsyncFactory[_T] | None = None,
         instance: _T | object = _EMPTY,
         singleton: bool = False,
     ) -> None:
@@ -111,6 +115,10 @@ class Container:
         Raises :class:`ResolutionError` on missing bindings or circular deps.
         """
         return self._resolve(service, _stack=(), **overrides)
+
+    async def resolve_async(self, service: type[_T], **overrides: Any) -> _T:
+        """Resolve a service, awaiting async factories as needed."""
+        return await self._resolve_async(service, _stack=(), **overrides)
 
     def scope(self) -> Container:
         """Create a child container inheriting all parent bindings.
@@ -164,6 +172,52 @@ class Container:
 
         return cast("_T", instance)
 
+    async def _resolve_async(
+        self,
+        service: type[_T],
+        *,
+        _stack: tuple[type, ...],
+        **overrides: Any,
+    ) -> _T:
+        if service in _stack:
+            chain = " -> ".join(t.__name__ for t in (*_stack, service))
+            raise ResolutionError(f"Circular dependency: {chain}")
+
+        binding_owner_and_binding = self._find_binding_owner(service)
+        if binding_owner_and_binding is None:
+            chain = " -> ".join(t.__name__ for t in (*_stack, service))
+            raise ResolutionError(f"Cannot resolve {service.__name__}: no binding ({chain})")
+        binding_owner, binding = binding_owner_and_binding
+
+        if overrides and binding.lifetime == "singleton":
+            raise ResolutionError(
+                f"Cannot resolve {service.__name__}: overrides are not supported "
+                "for singleton bindings; use a child scope or an explicit "
+                "factory instead",
+            )
+
+        if binding.lifetime == "singleton":
+            return cast(
+                "_T",
+                await binding_owner._resolve_singleton_async(
+                    service,
+                    binding,
+                    stack=(*_stack, service),
+                    overrides=overrides,
+                ),
+            )
+
+        if binding.provider_kind == "instance":
+            return cast("_T", binding.provider)
+
+        factory = _require_factory(binding)
+        instance = await self._invoke_factory_async(
+            factory,
+            _stack=(*_stack, service),
+            **overrides,
+        )
+        return cast("_T", instance)
+
     def _find_binding(self, service: type) -> _Binding | None:
         binding_owner_and_binding = self._find_binding_owner(service)
         if binding_owner_and_binding is None:
@@ -204,6 +258,49 @@ class Container:
             self._singletons[service] = instance
             return instance
 
+    async def _resolve_singleton_async(
+        self,
+        service: type,
+        binding: _Binding,
+        *,
+        stack: tuple[type, ...],
+        overrides: dict[str, Any],
+    ) -> object:
+        with self._lock:
+            existing = self._singletons.get(service, _EMPTY)
+            if existing is not _EMPTY:
+                return existing
+
+            if binding.provider_kind == "instance":
+                self._singletons[service] = binding.provider
+                return binding.provider
+
+            pending = self._pending_async_singletons.get(service)
+            if pending is None:
+                factory = _require_factory(binding)
+                pending = asyncio.create_task(
+                    self._invoke_factory_async(
+                        factory,
+                        _stack=stack,
+                        **overrides,
+                    ),
+                )
+                self._pending_async_singletons[service] = pending
+
+        try:
+            instance = await pending
+        except Exception:
+            with self._lock:
+                if self._pending_async_singletons.get(service) is pending:
+                    self._pending_async_singletons.pop(service, None)
+            raise
+
+        with self._lock:
+            self._singletons[service] = instance
+            if self._pending_async_singletons.get(service) is pending:
+                self._pending_async_singletons.pop(service, None)
+        return instance
+
     def _invoke_factory(
         self,
         factory: Callable[..., Any],
@@ -214,9 +311,69 @@ class Container:
         """Call a factory, resolving its parameters from the container."""
         sig_and_hints = _introspect_factory(factory)
         if sig_and_hints is None:
-            return factory()
+            if inspect.iscoroutinefunction(factory):
+                _raise_async_resolution_error(factory, stack=_stack)
+            instance = factory()
+            if inspect.isawaitable(instance):
+                if inspect.iscoroutine(instance):
+                    instance.close()
+                _raise_async_resolution_error(factory, stack=_stack, returned_awaitable=True)
+            return instance
         sig, hints = sig_and_hints
+        kwargs = self._build_factory_kwargs(
+            factory,
+            sig,
+            hints,
+            _stack=_stack,
+            overrides=overrides,
+        )
+        if inspect.iscoroutinefunction(factory):
+            _raise_async_resolution_error(factory, stack=_stack)
 
+        instance = factory(**kwargs)
+        if inspect.isawaitable(instance):
+            if inspect.iscoroutine(instance):
+                instance.close()
+            _raise_async_resolution_error(factory, stack=_stack, returned_awaitable=True)
+        return instance
+
+    async def _invoke_factory_async(
+        self,
+        factory: Callable[..., Any],
+        *,
+        _stack: tuple[type, ...],
+        **overrides: Any,
+    ) -> Any:
+        """Call a factory, awaiting it if needed and resolving deps async."""
+        sig_and_hints = _introspect_factory(factory)
+        if sig_and_hints is None:
+            instance = factory()
+            if inspect.isawaitable(instance):
+                return await instance
+            return instance
+        sig, hints = sig_and_hints
+        kwargs = await self._build_factory_kwargs_async(
+            factory,
+            sig,
+            hints,
+            _stack=_stack,
+            overrides=overrides,
+        )
+
+        instance = factory(**kwargs)
+        if inspect.isawaitable(instance):
+            return await instance
+        return instance
+
+    def _build_factory_kwargs(
+        self,
+        factory: Callable[..., Any],
+        sig: inspect.Signature,
+        hints: dict[str, Any],
+        *,
+        _stack: tuple[type, ...],
+        overrides: dict[str, Any],
+    ) -> dict[str, Any]:
         kwargs: dict[str, Any] = {}
         for param_name, param in sig.parameters.items():
             if param_name == "self":
@@ -225,9 +382,8 @@ class Container:
                 kwargs[param_name] = overrides[param_name]
                 continue
 
-            param_type = hints.get(param_name)
             resolved_type = _resolve_param_type(
-                param_type,
+                hints.get(param_name),
                 factory_name=_callable_name(factory),
                 param_name=param_name,
             )
@@ -237,25 +393,54 @@ class Container:
                     kwargs[param_name] = self._resolve(resolved_type.binding_key, _stack=_stack)
                     continue
 
-            # No binding found — use default if available
-            if param.default is not inspect.Parameter.empty:
-                continue  # let Python's default apply
-            if param.kind in (
-                inspect.Parameter.VAR_POSITIONAL,
-                inspect.Parameter.VAR_KEYWORD,
-            ):
+            _validate_or_skip_missing_param(
+                factory,
+                param_name,
+                param,
+                resolved_type.display_name,
+                stack=_stack,
+            )
+        return kwargs
+
+    async def _build_factory_kwargs_async(
+        self,
+        factory: Callable[..., Any],
+        sig: inspect.Signature,
+        hints: dict[str, Any],
+        *,
+        _stack: tuple[type, ...],
+        overrides: dict[str, Any],
+    ) -> dict[str, Any]:
+        kwargs: dict[str, Any] = {}
+        for param_name, param in sig.parameters.items():
+            if param_name == "self":
+                continue
+            if param_name in overrides:
+                kwargs[param_name] = overrides[param_name]
                 continue
 
-            # Required param with no binding and no default
-            chain = " -> ".join(t.__name__ for t in _stack)
-            raise ResolutionError(
-                f"Cannot resolve {factory.__name__}: "
-                f"missing binding for parameter '{param_name}' "
-                f"(type={resolved_type.display_name}) "
-                f"({chain})",
+            resolved_type = _resolve_param_type(
+                hints.get(param_name),
+                factory_name=_callable_name(factory),
+                param_name=param_name,
             )
+            if resolved_type.binding_key is not None:
+                binding = self._find_binding(resolved_type.binding_key)
+                if binding is not None:
+                    kwargs[param_name] = await self._resolve_async(
+                        resolved_type.binding_key,
+                        _stack=_stack,
+                    )
+                    continue
 
-        return factory(**kwargs)
+            _validate_or_skip_missing_param(
+                factory,
+                param_name,
+                param,
+                resolved_type.display_name,
+                stack=_stack,
+            )
+        return kwargs
 
 
 def _introspect_factory(
@@ -355,6 +540,48 @@ def _require_factory(binding: _Binding) -> Callable[..., Any]:
         msg = "Binding is missing a factory"
         raise ResolutionError(msg)
     return cast("Callable[..., Any]", binding.provider)
+
+
+def _raise_async_resolution_error(
+    factory: Callable[..., Any],
+    *,
+    stack: tuple[type, ...],
+    returned_awaitable: bool = False,
+) -> typing.NoReturn:
+    """Raise a consistent error when sync resolution hits async work."""
+    service_name = stack[-1].__name__ if stack else _callable_name(factory)
+    chain = " -> ".join(t.__name__ for t in stack)
+    behavior = "returned awaitable" if returned_awaitable else "is async"
+    raise ResolutionError(
+        f"Cannot resolve {service_name}: factory '{_callable_name(factory)}' {behavior}; "
+        f"use resolve_async() ({chain})",
+    )
+
+
+def _validate_or_skip_missing_param(
+    factory: Callable[..., Any],
+    param_name: str,
+    param: inspect.Parameter,
+    display_name: str,
+    *,
+    stack: tuple[type, ...],
+) -> None:
+    """Raise for unresolved required params and otherwise let Python apply defaults."""
+    if param.default is not inspect.Parameter.empty:
+        return
+    if param.kind in (
+        inspect.Parameter.VAR_POSITIONAL,
+        inspect.Parameter.VAR_KEYWORD,
+    ):
+        return
+
+    chain = " -> ".join(t.__name__ for t in stack)
+    raise ResolutionError(
+        f"Cannot resolve {factory.__name__}: "
+        f"missing binding for parameter '{param_name}' "
+        f"(type={display_name}) "
+        f"({chain})",
+    )
 
 
 def _validate_service_type(service: type[Any]) -> None:

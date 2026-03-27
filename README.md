@@ -72,6 +72,10 @@ provide qualifier-style multiple bindings for the same base type. If two
 dependencies mean different things, model them as different types. If the
 distinction is construction logic, use an explicit factory.
 
+Factories may be synchronous or asynchronous. Asynchronous factories are only
+supported through `await container.resolve_async(...)`; calling `resolve()` on a
+graph that requires awaiting raises `ResolutionError`.
+
 ## Design Philosophy
 
 miniject prefers minimal container magic:
@@ -93,6 +97,41 @@ or an explicit factory when construction needs per-call inputs.
 
 Raises `ResolutionError` on missing bindings or circular dependencies, with
 a full dependency chain in the message.
+
+### `await container.resolve_async(service, **overrides)`
+
+Resolve a service like `resolve()`, but await async factories as needed.
+Synchronous factories still work normally under `resolve_async()`.
+
+Use this when any binding in the graph is backed by an `async def` factory:
+
+```python
+async def create_database() -> Database:
+    return Database("postgres://localhost/mydb")
+
+container = Container()
+container.bind(Database, factory=create_database, singleton=True)
+
+database = await container.resolve_async(Database)
+```
+
+This also applies when the service you are resolving is itself synchronous but
+depends on something produced asynchronously:
+
+```python
+class UserRepo:
+    def __init__(self, database: Database) -> None:
+        self.database = database
+
+async def create_database() -> Database:
+    return Database("postgres://localhost/mydb")
+
+container = Container()
+container.bind(Database, factory=create_database)
+container.bind(UserRepo)
+
+repo = await container.resolve_async(UserRepo)
+```
 
 ### `container.scope()`
 
@@ -175,11 +214,12 @@ miniject is a good fit when you want:
 - constructor injection from type hints
 - a tiny composition-root container with very little magic
 - child scopes for tests and context-specific overrides
+- optional async factory resolution at the composition root
 - explicit failure when runtime annotations are not actually resolvable
 
 miniject is probably **not** the right fit when you need:
 
-- async/resource lifecycle management
+- async resource lifecycle management
 - framework integration or function/method wiring
 - multiple qualified bindings for the same base type
 - extensive provider types, configuration loaders, or container metaprogramming
