@@ -303,33 +303,38 @@ class Container:
         **overrides: Any,
     ) -> Any:
         """Call a factory, resolving its parameters from the container."""
-        sig_and_hints = introspect_factory(factory, resolution_error=ResolutionError)
-        if sig_and_hints is None:
-            if inspect.iscoroutinefunction(factory):
-                _raise_async_resolution_error(factory, stack=_stack)
-            instance = factory()
-            if inspect.isawaitable(instance):
-                if inspect.iscoroutine(instance):
-                    instance.close()
-                _raise_async_resolution_error(factory, stack=_stack, returned_awaitable=True)
-            return instance
-        sig, hints = sig_and_hints
-        kwargs = self._build_factory_kwargs(
-            factory,
-            sig,
-            hints,
+        plan = introspect_factory(factory, resolution_error=ResolutionError)
+        if plan is None:
+            return _call_sync_factory_checked(
+                factory,
+                stack=_stack,
+                is_async=inspect.iscoroutinefunction(factory),
+            )
+        fast_args = self._build_fast_positional_args(
+            plan.fast_positional_deps,
             _stack=_stack,
             overrides=overrides,
         )
-        if inspect.iscoroutinefunction(factory):
-            _raise_async_resolution_error(factory, stack=_stack)
-
-        instance = factory(**kwargs)
-        if inspect.isawaitable(instance):
-            if inspect.iscoroutine(instance):
-                instance.close()
-            _raise_async_resolution_error(factory, stack=_stack, returned_awaitable=True)
-        return instance
+        if fast_args is not None:
+            return _call_sync_factory_checked(
+                factory,
+                args=fast_args,
+                stack=_stack,
+                is_async=plan.is_async,
+            )
+        kwargs = self._build_factory_kwargs(
+            factory,
+            plan.signature,
+            plan.hints,
+            _stack=_stack,
+            overrides=overrides,
+        )
+        return _call_sync_factory_checked(
+            factory,
+            kwargs=kwargs,
+            stack=_stack,
+            is_async=plan.is_async,
+        )
 
     async def _invoke_factory_async(
         self,
@@ -339,17 +344,26 @@ class Container:
         **overrides: Any,
     ) -> Any:
         """Call a factory, awaiting it if needed and resolving deps async."""
-        sig_and_hints = introspect_factory(factory, resolution_error=ResolutionError)
-        if sig_and_hints is None:
+        plan = introspect_factory(factory, resolution_error=ResolutionError)
+        if plan is None:
             instance = factory()
             if inspect.isawaitable(instance):
                 return await instance
             return instance
-        sig, hints = sig_and_hints
+        fast_args = await self._build_fast_positional_args_async(
+            plan.fast_positional_deps,
+            _stack=_stack,
+            overrides=overrides,
+        )
+        if fast_args is not None:
+            instance = factory(*fast_args)
+            if inspect.isawaitable(instance):
+                return await instance
+            return instance
         kwargs = await self._build_factory_kwargs_async(
             factory,
-            sig,
-            hints,
+            plan.signature,
+            plan.hints,
             _stack=_stack,
             overrides=overrides,
         )
@@ -397,6 +411,24 @@ class Container:
             )
         return kwargs
 
+    def _build_fast_positional_args(
+        self,
+        fast_positional_deps: tuple[type, ...] | None,
+        *,
+        _stack: tuple[type, ...],
+        overrides: dict[str, Any],
+    ) -> tuple[object, ...] | None:
+        if fast_positional_deps is None or overrides:
+            return None
+
+        resolved: list[object] = []
+        for dep in fast_positional_deps:
+            if self._find_binding(dep) is None:
+                return None
+            resolved_instance = cast("object", self._resolve(dep, _stack=_stack))
+            resolved.append(resolved_instance)
+        return tuple(resolved)
+
     async def _build_factory_kwargs_async(
         self,
         factory: Callable[..., Any],
@@ -438,6 +470,24 @@ class Container:
             )
         return kwargs
 
+    async def _build_fast_positional_args_async(
+        self,
+        fast_positional_deps: tuple[type, ...] | None,
+        *,
+        _stack: tuple[type, ...],
+        overrides: dict[str, Any],
+    ) -> tuple[object, ...] | None:
+        if fast_positional_deps is None or overrides:
+            return None
+
+        resolved: list[object] = []
+        for dep in fast_positional_deps:
+            if self._find_binding(dep) is None:
+                return None
+            resolved_instance = cast("object", await self._resolve_async(dep, _stack=_stack))
+            resolved.append(resolved_instance)
+        return tuple(resolved)
+
 
 def _require_factory(binding: _Binding) -> Callable[..., Any]:
     """Return a binding factory or raise if the binding is malformed."""
@@ -461,6 +511,25 @@ def _raise_async_resolution_error(
         f"Cannot resolve {service_name}: factory '{callable_name(factory)}' {behavior}; "
         f"use resolve_async() ({chain})",
     )
+
+
+def _call_sync_factory_checked(
+    factory: Callable[..., Any],
+    *,
+    stack: tuple[type, ...],
+    is_async: bool,
+    args: tuple[object, ...] = (),
+    kwargs: dict[str, Any] | None = None,
+) -> Any:
+    if is_async:
+        _raise_async_resolution_error(factory, stack=stack)
+
+    instance = factory(*args, **({} if kwargs is None else kwargs))
+    if inspect.isawaitable(instance):
+        if inspect.iscoroutine(instance):
+            instance.close()
+        _raise_async_resolution_error(factory, stack=stack, returned_awaitable=True)
+    return instance
 
 
 def _validate_or_skip_missing_param(

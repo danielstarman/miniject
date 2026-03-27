@@ -13,7 +13,7 @@ _EMPTY: object = object()
 _DISALLOWED_AUTO_INJECT_TYPES: frozenset[type] = frozenset({bool, bytes, float, int, str})
 _NONE_TYPE: type[None] = type(None)
 _UNION_TYPES: tuple[object, ...] = (typing.Union, types.UnionType)
-_INTROSPECTION_CACHE: dict[object, tuple[inspect.Signature, dict[str, Any]] | None] = {}
+_INTROSPECTION_CACHE: dict[object, FactoryPlan | None] = {}
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,18 +24,28 @@ class ResolvedParamType:
     display_name: str
 
 
+@dataclass(frozen=True, slots=True)
+class FactoryPlan:
+    """Cached callable metadata used during dependency resolution."""
+
+    signature: inspect.Signature
+    hints: dict[str, Any]
+    is_async: bool
+    fast_positional_deps: tuple[type, ...] | None
+
+
 def introspect_factory(
     factory: Callable[..., Any],
     *,
     resolution_error: type[Exception],
-) -> tuple[inspect.Signature, dict[str, Any]] | None:
+) -> FactoryPlan | None:
     """Extract signature and type hints for a factory, or None if not introspectable."""
     try:
         cached = _INTROSPECTION_CACHE.get(factory, _EMPTY)
     except TypeError:
         return _compute_factory_introspection(factory, resolution_error=resolution_error)
     if cached is not _EMPTY:
-        return cast("tuple[inspect.Signature, dict[str, Any]] | None", cached)
+        return cast("FactoryPlan | None", cached)
 
     result = _compute_factory_introspection(factory, resolution_error=resolution_error)
     _INTROSPECTION_CACHE[factory] = result
@@ -46,9 +56,10 @@ def _compute_factory_introspection(
     factory: Callable[..., Any],
     *,
     resolution_error: type[Exception],
-) -> tuple[inspect.Signature, dict[str, Any]] | None:
+) -> FactoryPlan | None:
     """Compute signature and type hints for a factory without caching."""
     hint_target = factory.__init__ if isinstance(factory, type) else factory
+    factory_name = callable_name(factory)
     try:
         sig = inspect.signature(factory)
     except (ValueError, TypeError):
@@ -56,16 +67,55 @@ def _compute_factory_introspection(
     except NameError as exc:
         _raise_type_hint_resolution_error(
             hint_target,
-            factory_name=callable_name(factory),
+            factory_name=factory_name,
             resolution_error=resolution_error,
             exc=exc,
         )
     hints = _get_type_hints_or_raise(
         hint_target,
-        factory_name=callable_name(factory),
+        factory_name=factory_name,
         resolution_error=resolution_error,
     )
-    return sig, hints
+    return FactoryPlan(
+        signature=sig,
+        hints=hints,
+        is_async=inspect.iscoroutinefunction(factory),
+        fast_positional_deps=_build_fast_positional_deps(
+            sig,
+            hints,
+            factory_name=factory_name,
+            resolution_error=resolution_error,
+        ),
+    )
+
+
+def _build_fast_positional_deps(
+    sig: inspect.Signature,
+    hints: dict[str, Any],
+    *,
+    factory_name: str,
+    resolution_error: type[Exception],
+) -> tuple[type, ...] | None:
+    deps: list[type] = []
+    for param_name, param in sig.parameters.items():
+        if param_name == "self":
+            continue
+        if param.kind not in (
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        ):
+            return None
+
+        resolved_type = resolve_param_type(
+            hints.get(param_name),
+            factory_name=factory_name,
+            param_name=param_name,
+            resolution_error=resolution_error,
+        )
+        if resolved_type.binding_key is None or param.default is not inspect.Parameter.empty:
+            return None
+        deps.append(resolved_type.binding_key)
+    return tuple(deps)
 
 
 def _get_type_hints_or_raise(
