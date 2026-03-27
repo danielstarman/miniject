@@ -48,11 +48,18 @@ def _compute_factory_introspection(
     resolution_error: type[Exception],
 ) -> tuple[inspect.Signature, dict[str, Any]] | None:
     """Compute signature and type hints for a factory without caching."""
+    hint_target = factory.__init__ if isinstance(factory, type) else factory
     try:
         sig = inspect.signature(factory)
     except (ValueError, TypeError):
         return None
-    hint_target = factory.__init__ if isinstance(factory, type) else factory
+    except NameError as exc:
+        _raise_type_hint_resolution_error(
+            hint_target,
+            factory_name=callable_name(factory),
+            resolution_error=resolution_error,
+            exc=exc,
+        )
     hints = _get_type_hints_or_raise(
         hint_target,
         factory_name=callable_name(factory),
@@ -71,12 +78,12 @@ def _get_type_hints_or_raise(
     try:
         return typing.get_type_hints(fn, include_extras=True)
     except (AttributeError, NameError, TypeError, ValueError) as exc:
-        target_name = callable_name(fn)
-        raise resolution_error(
-            f"Cannot resolve {factory_name}: failed to evaluate type hints for "
-            f"{target_name}; make annotations importable at runtime or use an explicit "
-            f"factory ({exc.__class__.__name__}: {exc})",
-        ) from exc
+        _raise_type_hint_resolution_error(
+            fn,
+            factory_name=factory_name,
+            resolution_error=resolution_error,
+            exc=exc,
+        )
 
 
 def resolve_param_type(
@@ -139,6 +146,21 @@ def is_auto_injectable_type(param_type: Any) -> bool:
 def callable_name(fn: Callable[..., Any]) -> str:
     """Best-effort human-readable callable name for diagnostics."""
     return getattr(fn, "__name__", fn.__class__.__name__)
+
+
+def _raise_type_hint_resolution_error(
+    fn: Callable[..., Any],
+    *,
+    factory_name: str,
+    resolution_error: type[Exception],
+    exc: Exception,
+) -> typing.NoReturn:
+    target_name = callable_name(fn)
+    raise resolution_error(
+        f"Cannot resolve {factory_name}: failed to evaluate type hints for "
+        f"{target_name}; make annotations importable at runtime or use an explicit "
+        f"factory ({exc.__class__.__name__}: {exc})",
+    ) from exc
 
 
 def validate_service_type(service: type[Any]) -> None:

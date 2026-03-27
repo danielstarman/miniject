@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.util
+import sys
+import uuid
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from threading import Barrier, Lock
-from typing import Annotated
+from typing import Annotated, Any, cast
 
 import pytest
 
@@ -681,3 +685,79 @@ def test_circular_dependency_detected() -> None:
 
     with pytest.raises(ResolutionError, match="Circular dependency"):
         c.resolve(_CircularA)
+
+
+def _load_module_from_source(tmp_path: Path, source: str) -> dict[str, object]:
+    module_name = f"_miniject_test_{uuid.uuid4().hex}"
+    module_path = tmp_path / f"{module_name}.py"
+    module_path.write_text(source, encoding="utf-8")
+
+    spec = importlib.util.spec_from_file_location(module_name, module_path)
+    assert spec is not None
+    assert spec.loader is not None
+
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.modules.pop(module_name, None)
+    return module.__dict__
+
+
+def test_resolve_deferred_forward_reference_type_hints_in_runtime_annotations_injects_dependency(
+    tmp_path: Path,
+) -> None:
+    if sys.version_info < (3, 14):
+        pytest.skip("Python 3.14+ only")
+
+    namespace = _load_module_from_source(
+        tmp_path,
+        """
+class Repo:
+    def __init__(self, database: Database) -> None:
+        self.database = database
+
+class Database:
+    def __init__(self, path: str = ":memory:") -> None:
+        self.path = path
+""",
+    )
+
+    repo_type = cast("type[Any]", namespace["Repo"])
+    database_type = cast("type[Any]", namespace["Database"])
+    assert isinstance(repo_type, type)
+    assert isinstance(database_type, type)
+
+    c = Container()
+    c.bind(database_type, instance=database_type("/deferred"))
+    c.bind(repo_type)
+
+    repo = c.resolve(repo_type)
+
+    assert repo.database.path == "/deferred"
+
+
+def test_resolve_unresolvable_runtime_deferred_annotations_raises_resolution_error(
+    tmp_path: Path,
+) -> None:
+    if sys.version_info < (3, 14):
+        pytest.skip("Python 3.14+ only")
+
+    namespace = _load_module_from_source(
+        tmp_path,
+        """
+class Service:
+    def __init__(self, dependency: MissingType) -> None:
+        self.dependency = dependency
+""",
+    )
+
+    service_type = cast("type[Any]", namespace["Service"])
+    assert isinstance(service_type, type)
+
+    c = Container()
+    c.bind(service_type)
+
+    with pytest.raises(ResolutionError, match="failed to evaluate type hints"):
+        c.resolve(service_type)
