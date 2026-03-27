@@ -24,11 +24,14 @@ classifiers = [
 [project.urls]
 Repository = "https://github.com/danielstarman/miniject"
 
-[project.optional-dependencies]
+[dependency-groups]
 dev = ["pytest", "pyright", "ruff"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/miniject"]
+
+[tool.uv]
+required-version = "==0.11.2"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

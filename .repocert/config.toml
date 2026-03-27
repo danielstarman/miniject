@@ -15,20 +15,20 @@ name = "miniject-repocert"
 public_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDfLjrZnYSQ15EsQ2LeeNm6l58YwdNp03JP+eWPLyo2D miniject-repocert"
 
 [checks.ruff_format]
-argv = [".venv/bin/python", "-m", "ruff", "format", "--check", "."]
+argv = ["uv", "run", "--locked", "ruff", "format", "--check", "."]
 
 [checks.ruff_lint]
-argv = [".venv/bin/python", "-m", "ruff", "check", "."]
+argv = ["uv", "run", "--locked", "ruff", "check", "."]
 
 [checks.pyright]
-argv = [".venv/bin/python", "-m", "pyright", "--pythonpath", ".venv/bin/python", "-p", "."]
+argv = ["uv", "run", "--locked", "pyright", "-p", "."]
 
 [checks.pytest]
-argv = [".venv/bin/python", "-m", "pytest", "-q"]
+argv = ["uv", "run", "--locked", "pytest", "-q"]
 
 [fixers.ruff_format]
-argv = [".venv/bin/python", "-m", "ruff", "format", "."]
-probe_argv = [".venv/bin/python", "-m", "ruff", "format", "--check", "."]
+argv = ["uv", "run", "--locked", "ruff", "format", "."]
+probe_argv = ["uv", "run", "--locked", "ruff", "format", "--check", "."]
 
 [profiles.default]
 checks = ["ruff_format", "ruff_lint", "pyright", "pytest"]

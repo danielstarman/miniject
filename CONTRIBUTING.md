@@ -2,11 +2,11 @@
 
 ## Setup
 
-Create a repo-local virtualenv and install the dev dependencies:
+Install [`uv`](https://docs.astral.sh/uv/) and sync the project environment:
 
 ```bash
-python3 -m venv .venv
-.venv/bin/python -m pip install -e '.[dev]'
+curl -LsSf https://astral.sh/uv/install.sh | sh
+uv sync
 ```
 
 Install [`repocert`](https://crates.io/crates/repocert) separately if you want
@@ -21,10 +21,10 @@ cargo install --locked --force repocert
 The repo contract in `.repocert/config.toml` mirrors the normal development
 checks:
 
-- `.venv/bin/python -m ruff format --check .`
-- `.venv/bin/python -m ruff check .`
-- `.venv/bin/python -m pyright --pythonpath .venv/bin/python -p .`
-- `.venv/bin/python -m pytest -q`
+- `uv run --locked ruff format --check .`
+- `uv run --locked ruff check .`
+- `uv run --locked pyright -p .`
+- `uv run --locked pytest -q`
 
 You can run them through `repocert`:
 
@@ -42,6 +42,9 @@ pass the matching private SSH key whose public key is listed in
 ```bash
 repocert certify --signing-key /path/to/private/key
 ```
+
+`uv sync` creates a repo-local `.venv` next to `pyproject.toml`, so run it once
+per worktree or fresh checkout.
 
 ## Hooks
 
