@@ -25,6 +25,7 @@ _EMPTY: object = object()
 _DISALLOWED_AUTO_INJECT_TYPES: frozenset[type] = frozenset({bool, bytes, float, int, str})
 _NONE_TYPE: type[None] = type(None)
 _UNION_TYPES: tuple[object, ...] = (typing.Union, types.UnionType)
+_INTROSPECTION_CACHE: dict[object, tuple[inspect.Signature, dict[str, Any]] | None] = {}
 
 
 class ResolutionError(Exception):
@@ -447,6 +448,22 @@ def _introspect_factory(
     factory: Callable[..., Any],
 ) -> tuple[inspect.Signature, dict[str, Any]] | None:
     """Extract signature and type hints for a factory, or None if not introspectable."""
+    try:
+        cached = _INTROSPECTION_CACHE.get(factory, _EMPTY)
+    except TypeError:
+        return _compute_factory_introspection(factory)
+    if cached is not _EMPTY:
+        return cast("tuple[inspect.Signature, dict[str, Any]] | None", cached)
+
+    result = _compute_factory_introspection(factory)
+    _INTROSPECTION_CACHE[factory] = result
+    return result
+
+
+def _compute_factory_introspection(
+    factory: Callable[..., Any],
+) -> tuple[inspect.Signature, dict[str, Any]] | None:
+    """Compute signature and type hints for a factory without caching."""
     try:
         sig = inspect.signature(factory)
     except (ValueError, TypeError):
