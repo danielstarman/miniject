@@ -7,8 +7,12 @@ require_clean_primary_checkout = true
 [hooks]
 mode = "generated"
 
-[hooks.generated]
-hooks = ["pre-commit", "pre-merge-commit", "pre-push", "update"]
+[certification]
+mode = "ssh-signed"
+
+[[certification.trusted_signer]]
+name = "miniject-repocert"
+public_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDfLjrZnYSQ15EsQ2LeeNm6l58YwdNp03JP+eWPLyo2D miniject-repocert"
 
 [checks.ruff_format]
 argv = [".venv/bin/python", "-m", "ruff", "format", "--check", "."]

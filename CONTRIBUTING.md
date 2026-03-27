@@ -10,7 +10,11 @@ python3 -m venv .venv
 ```
 
 Install [`repocert`](https://crates.io/crates/repocert) separately if you want
-the certification workflow and local Git hook enforcement.
+the certification workflow and local Git hook enforcement:
+
+```bash
+cargo install --locked --force repocert
+```
 
 ## Checks
 
@@ -28,8 +32,15 @@ You can run them through `repocert`:
 repocert validate
 repocert check
 repocert fix
-repocert certify
 repocert status --assert-certified
+```
+
+This repo uses a repo-scoped `ssh-signed` repocert key. To certify a commit,
+pass the matching private SSH key whose public key is listed in
+`.repocert/config.toml`, or set `REPOCERT_SIGNING_KEY` to that key path:
+
+```bash
+repocert certify --signing-key /path/to/private/key
 ```
 
 ## Hooks
